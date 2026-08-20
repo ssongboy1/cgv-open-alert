@@ -13,6 +13,13 @@
       "screen": "아이맥스",
       "movie_keyword": "",
       "notify": "movie"
+    },
+    {
+      "site_no": "0128",
+      "site_nm": "울산삼산",
+      "screen": "아이맥스",
+      "movie_keyword": "오디세이",
+      "notify": "schedule"
     }
   ],
   "full_scan_every_runs": 30,
