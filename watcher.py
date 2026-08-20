@@ -131,6 +131,13 @@ def granularity_of(target):
     return "movie" if target.get("notify") == "movie" else "schedule"
 
 
+def target_id(target):
+    """감시 대상 하나를 식별하는 값. 기준선을 잡았는지 기록하는 데 쓴다."""
+    return "{}|{}|{}|{}".format(
+        target["site_no"], screen_of(target),
+        normalize(target.get("movie_keyword", "")), granularity_of(target))
+
+
 def describe(target):
     screen = screen_of(target)
     screen_txt = "전 상영관" if screen == SCREEN_ALL else screen
@@ -341,7 +348,12 @@ def run_once(cfg, state, dry_run=False):
     first_run = not state.get("initialized", False)
 
     seen = set(state.get("seen", []))
-    gates = dict(state.get("gates", {}))
+    # 이번 실행 내내 '지난번 값'은 고정이어야 한다. 루프 도중에 덮어쓰면
+    # 같은 지점을 보는 두 번째 대상부터는 방금 쓴 값과 비교하게 되어
+    # 영원히 '변화 없음'으로 판정된다.
+    old_gates = dict(state.get("gates", {}))
+    new_gates = {}
+    baselined = set(state.get("baselined", []))
     scanned = {}          # site_no -> 전체 회차 (지점당 1회만 조회)
     alive_movie_keys = set()
     messages = []
@@ -358,15 +370,27 @@ def run_once(cfg, state, dry_run=False):
         unit = granularity_of(target)
         label = describe(target)
 
-        snap = gate_snapshot(site_no)
-        changed = gates.get(site_no) != snap
-        gates[site_no] = snap
+        # 이번에 새로 등록된 대상인가. 시스템 전체의 첫 실행과는 별개다.
+        # 이미 돌고 있는 상태에서 대상을 추가하면 그 대상에 대한 seen 이
+        # 비어 있어 현재 열린 회차가 전부 '신규'로 보인다. 그대로 두면
+        # 추가하자마자 지금 열려 있는 회차를 몽땅 알리게 된다.
+        tid = target_id(target)
+        new_target = tid not in baselined
 
-        if not (changed or force_scan or first_run):
+        # 게이트는 지점당 한 번만 조회한다. 같은 지점을 여러 대상이
+        # 보고 있어도 요청이 늘지 않는다.
+        if site_no not in new_gates:
+            new_gates[site_no] = gate_snapshot(site_no)
+        snap = new_gates[site_no]
+        changed = old_gates.get(site_no) != snap
+
+        if not (changed or force_scan or first_run or new_target):
             log("  {}: 변화 없음".format(label))
             continue
 
-        why = "첫 실행" if first_run else ("게이트 변화" if changed else "정기 전체 스캔")
+        why = ("새 대상 기준선" if new_target else
+               "첫 실행" if first_run else
+               "게이트 변화" if changed else "정기 전체 스캔")
         if site_no not in scanned:
             scanned[site_no] = scan_site(site_no, snap["dates"])
         all_rows = scanned[site_no]
@@ -374,6 +398,13 @@ def run_once(cfg, state, dry_run=False):
 
         rows = select_rows(all_rows, screen, keyword)
         log("  {}: {} -> {}회차".format(label, why, len(rows)))
+
+        # 스캔을 마쳤으면 기준선을 잡은 것으로 친다. 매칭이 0건이어도
+        # 반드시 여기서 기록해야 한다. 이 줄이 아래 'if not rows' 뒤에
+        # 있으면, 아직 안 열린 영화(= 0건)를 감시할 때 영원히 '새 대상'으로
+        # 남아 정작 예매가 열리는 순간 알림 대신 기준선만 잡고 끝난다.
+        baselined.add(tid)
+
         if not rows:
             continue
 
@@ -392,8 +423,11 @@ def run_once(cfg, state, dry_run=False):
         if not fresh:
             continue
 
-        if first_run and not cfg.get("notify_on_first_run", False):
-            log("    첫 실행이라 {}건을 기준선으로만 저장".format(len(fresh)))
+        # 시스템 첫 실행이든 대상을 새로 추가한 것이든, 그 시점에 이미
+        # 열려 있던 회차는 알리지 않는다. "새로 열리는 것"만 알린다는 약속.
+        if (first_run or new_target) and not cfg.get("notify_on_first_run", False):
+            log("    {}이라 {}건을 기준선으로만 저장".format(
+                "첫 실행" if first_run else "새 대상", len(fresh)))
             seen.update(fresh)
             continue
 
@@ -411,8 +445,11 @@ def run_once(cfg, state, dry_run=False):
                 messages.append((build_schedule_message(site_nm, mov_nm, group, site_no),
                                  keys, booking_button(site_no, site_nm)))
 
+    # 설정에서 지워진 대상의 기록은 함께 버린다. 나중에 다시 추가하면
+    # 그때 새 대상으로 보고 기준선을 다시 잡는 게 맞다.
+    state["baselined"] = sorted(baselined & {target_id(t) for t in cfg["targets"]})
     state["seen"] = sorted(prune_seen(seen, alive_movie_keys or None))
-    state["gates"] = gates
+    state["gates"] = new_gates
     state["initialized"] = True
     state["last_run"] = datetime.now(KST).isoformat(timespec="seconds")
     return messages, state

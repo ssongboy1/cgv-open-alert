@@ -20,11 +20,18 @@ import sys
 
 
 def merge(ours, theirs):
+    skip = ("seen", "gates", "baselined")
     out = dict(theirs)
-    out.update({k: v for k, v in ours.items() if k not in ("seen", "gates")})
+    out.update({k: v for k, v in ours.items() if k not in skip})
 
     # 알림을 보낸 기록은 어느 쪽도 잃으면 안 된다. 합집합.
     out["seen"] = sorted(set(ours.get("seen", [])) | set(theirs.get("seen", [])))
+
+    # 기준선을 잡은 대상도 합집합. 한쪽이라도 잡았으면 잡은 것이다.
+    # 잃어버리면 그 대상을 새로 추가한 것으로 오해해 다시 기준선을 잡는데,
+    # 그 사이에 열린 회차를 놓치게 된다.
+    out["baselined"] = sorted(
+        set(ours.get("baselined", [])) | set(theirs.get("baselined", [])))
 
     # 게이트 스냅샷은 지점별로 최신 쪽을 쓴다. 값이 다르면 다음 실행에서
     # 변화로 판단해 전체 스캔이 한 번 더 도는 것뿐이라 안전하다.
