@@ -48,6 +48,9 @@ jobs:
 
       # state.json 은 감시 기준선, config.json 은 텔레그램 봇으로 바꾼 설정.
       # 둘 다 남겨야 다음 실행이 이어진다.
+      # 실행이 겹치면 두 러너가 각각 state.json 을 고친 뒤 동시에 올리려 한다.
+      # rebase 는 이걸 자동으로 못 풀고 충돌로 죽으므로, 원격을 받아온 뒤
+      # seen 을 합집합으로 병합하고 그 위에 새로 커밋한다.
       - name: 변경사항 커밋
         if: always()
         run: |
@@ -56,9 +59,38 @@ jobs:
             echo "변경 없음"
             exit 0
           fi
+
+          # config.json 은 이번 실행에서 봇으로 바꿨을 때만 덮어쓴다.
+          # (안 바꿨는데 덮으면 다른 실행이 추가한 감시 대상을 지우게 된다)
+          CONFIG_CHANGED=$(git diff --name-only -- config.json)
+          cp state.json  /tmp/ours-state.json
+          cp config.json /tmp/ours-config.json
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json config.json
-          git commit -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          for attempt in 1 2 3; do
+            git fetch -q origin "${GITHUB_REF_NAME}"
+            git reset -q --hard "origin/${GITHUB_REF_NAME}"
+
+            python merge_state.py /tmp/ours-state.json state.json
+            if [ -n "$CONFIG_CHANGED" ]; then
+              cp /tmp/ours-config.json config.json
+            fi
+
+            if git diff --quiet -- state.json config.json; then
+              echo "병합 결과가 원격과 같음. 커밋 불필요"
+              exit 0
+            fi
+
+            git add state.json config.json
+            git commit -q -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
+            if git push -q origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "커밋 완료 (시도 $attempt)"
+              exit 0
+            fi
+            echo "push 경합 발생. 다시 시도 ($attempt/3)"
+            sleep 3
+          done
+          echo "3회 시도 후에도 push 실패"
+          exit 1
