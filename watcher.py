@@ -48,6 +48,8 @@ ROOT = Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
 STATE_FILE = ROOT / "state.json"
 BOOK_URL = "https://cgv.co.kr/cnm/movieBook"
+# 앱을 열어주는 중계 페이지 (docs/open.html, GitHub Pages)
+APP_OPEN_URL = "https://ssongboy1.github.io/cgv-open-alert/open.html"
 
 SCREEN_ALL = "ALL"
 
@@ -188,19 +190,28 @@ def screen_label(row):
 
 
 def booking_url(site_no, site_nm):
-    """해당 지점 예매 화면으로 바로 가는 링크.
-
-    cgv.co.kr 은 App Links 를 설정해두지 않아서 이 링크는 브라우저로 열린다.
-    (모바일 브라우저가 '앱으로 보기'를 띄워준다.)
-    앱을 직접 여는 cgv:// 스킴은 인라인 버튼 URL 로 쓸 수 없어서 본문에 넣는다.
-    """
+    """해당 지점 예매 화면 웹링크. 메시지 본문과 PC 용."""
     return "{}/cinema?siteNo={}&siteNm={}".format(
         BOOK_URL, site_no, urllib.parse.quote(site_nm))
 
 
+def app_open_url(site_no, site_nm):
+    """CGV 앱을 여는 중계 페이지.
+
+    텔레그램은 http/https 가 아닌 링크를 링크로 만들어주지 않고,
+    인라인 버튼 URL 도 https 만 받는다. 그래서 cgv:// 를 메시지에
+    직접 넣을 수 없다. https 페이지를 한 번 거쳐 앱으로 넘긴다.
+    (앱이 없으면 그 페이지가 알아서 웹 예매로 떨어뜨린다.)
+    """
+    return "{}?site={}&nm={}".format(
+        APP_OPEN_URL, site_no, urllib.parse.quote(site_nm))
+
+
 def booking_button(site_no, site_nm):
-    return [[{"text": "🎟 CGV {} 예매하러 가기".format(site_nm),
-              "url": booking_url(site_no, site_nm)}]]
+    return [
+        [{"text": "📱 CGV 앱으로 열기", "url": app_open_url(site_no, site_nm)}],
+        [{"text": "🌐 웹으로 예매하기", "url": booking_url(site_no, site_nm)}],
+    ]
 
 
 # ---------------------------------------------------------------- 키

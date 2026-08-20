@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CGV 앱으로 여는 중…</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Noto Sans KR",sans-serif;
+       margin:0;min-height:100vh;display:flex;align-items:center;
+       justify-content:center;background:#111;color:#eee}
+  .box{text-align:center;padding:28px;max-width:340px}
+  .spin{width:34px;height:34px;margin:0 auto 18px;border:3px solid #333;
+        border-top-color:#e33;border-radius:50%;animation:r .8s linear infinite}
+  @keyframes r{to{transform:rotate(360deg)}}
+  h1{font-size:17px;margin:0 0 6px;font-weight:600}
+  p{font-size:13px;color:#999;margin:0 0 22px;line-height:1.6}
+  a{display:block;padding:14px;border-radius:10px;text-decoration:none;
+    font-size:15px;margin-top:10px}
+  .app{background:#e33;color:#fff;font-weight:600}
+  .web{background:#262626;color:#8ab;border:1px solid #383838}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="spin"></div>
+  <h1>CGV 앱을 여는 중…</h1>
+  <p id="msg">앱이 열리지 않으면 아래 버튼을 눌러주세요.</p>
+  <a class="app" id="app" href="#">📱 CGV 앱 열기</a>
+  <a class="web" id="web" href="https://cgv.co.kr/cnm/movieBook">🌐 웹으로 예매하기</a>
+</div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var site = q.get("site") || "";
+  var name = q.get("nm") || "";
+
+  // 지점을 지정하면 그 지점 예매 화면으로, 아니면 예매 첫 화면으로.
+  var web = "https://cgv.co.kr/cnm/movieBook";
+  if (site) {
+    web += "/cinema?siteNo=" + encodeURIComponent(site) +
+           "&siteNm=" + encodeURIComponent(name);
+  }
+
+  // 실측으로 확인된 값:
+  //   cgv://                                        앱 열림
+  //   intent://#Intent;scheme=cgv;package=...;end   앱 열림
+  // intent 쪽은 앱이 없을 때 browser_fallback_url 로 알아서 떨어지므로
+  // 안드로이드에서는 이걸 쓴다.
+  var scheme = "cgv://";
+  var intent = "intent://#Intent;scheme=cgv;package=co.kr.cgv.cjcgv;" +
+               "S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+
+  var isAndroid = /Android/i.test(navigator.userAgent);
+  var isMobile  = isAndroid || /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  var target    = isAndroid ? intent : scheme;
+
+  document.getElementById("web").href = web;
+  document.getElementById("app").href = target;
+
+  if (!isMobile) {
+    // PC 는 앱이 없으니 바로 웹으로 보낸다.
+    document.getElementById("msg").textContent = "PC 에서는 웹으로 엽니다.";
+    location.replace(web);
+    return;
+  }
+
+  // 앱으로 넘긴다. 안드로이드 intent 는 실패 시 스스로 웹으로 떨어진다.
+  location.href = target;
+
+  // iOS 등에서 앱이 없으면 아무 일도 안 일어나므로 잠시 뒤 웹으로.
+  if (!isAndroid) {
+    var left = false;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) left = true;      // 앱으로 전환됨
+    });
+    setTimeout(function () {
+      if (!left) location.replace(web);
+    }, 1800);
+  }
+})();
+</script>
+</body>
+</html>
