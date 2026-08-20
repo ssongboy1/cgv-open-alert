@@ -6,15 +6,28 @@ BFF(https://cgv.co.kr/api/v1/*)를 경유한다. 이 BFF는 토큰/쿠키가 필
 coCd=A420 만 있으면 누구나 GET 으로 조회할 수 있다.
 
 --------------------------------------------------------------------------
-중요: cgv.co.kr 앞단 Cloudflare는 User-Agent 문자열만 보고 차단한다.
+중요: cgv.co.kr 앞단 Cloudflare 를 통과하려면 두 가지가 필요하다.
+
+1) User-Agent 를 브라우저 문자열로 (전 엔드포인트 공통)
 
     curl/8.4.0              -> 403
     python-requests/2.32.0  -> 403
     Mozilla/5.0 ... Chrome  -> 200
     Mozilla/5.0 ... (구형)   -> 200
 
-Referer/Accept/쿠키/JS 챌린지는 전부 불필요하다. 아래 UA 상수를 지우거나
-"python-urllib/3.12" 같은 기본값으로 되돌리면 즉시 전부 403이 된다.
+2) Referer 를 cgv.co.kr 페이지로 (searchMovScnInfo 에 필수)
+
+   실측: 같은 UA 로 호출해도
+       searchSscnsSchdExistList      UA만 200
+       searchSiteScnscYmdListBySite  UA만 200
+       searchRegnList                UA만 200
+       searchMovScnInfo              UA만 403 / UA+Referer 200
+
+   가장 무거운 시간표 엔드포인트만 Referer 를 요구한다. 하필 우리가
+   제일 많이 쓰는 엔드포인트다. Accept, Accept-Language 는 영향 없다.
+
+아래 헤더 중 User-Agent 나 Referer 를 빼면 감시가 통째로 멈춘다.
+selftest.py 가 이 둘을 회귀 테스트로 잡고 있다.
 --------------------------------------------------------------------------
 
 표준 라이브러리만 사용한다 (pip install 불필요).

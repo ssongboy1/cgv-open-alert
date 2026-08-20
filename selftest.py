@@ -386,6 +386,41 @@ def test_quiet_hours():
     check("설정이 없으면 감속 안 함", not watcher.in_quiet_hours({}))
 
 
+def test_required_headers():
+    """Cloudflare 통과에 필요한 헤더가 살아있는지.
+
+    UA 는 전 엔드포인트, Referer 는 searchMovScnInfo 에 필수다.
+    둘 중 하나라도 빠지면 감시가 통째로 멈춘다.
+    """
+    print("\n[14] Cloudflare 통과 헤더")
+    sent = {}
+    import urllib.request as ur
+    orig = ur.Request
+
+    def spy(url, **kw):
+        req = orig(url, **kw)
+        sent.update({k.lower(): v for k, v in (kw.get("headers") or {}).items()})
+        return req
+
+    ur.Request = spy
+    try:
+        try:
+            cgv_api._get("booking/searchRegnList")
+        except Exception:
+            pass
+    finally:
+        ur.Request = orig
+
+    check("User-Agent 를 브라우저로 보낸다",
+          "mozilla" in sent.get("user-agent", "").lower(), sent.get("user-agent"))
+    check("봇 도구 UA 가 아니다",
+          not any(b in sent.get("user-agent", "").lower()
+                  for b in ("curl", "python", "urllib", "requests")),
+          sent.get("user-agent"))
+    check("Referer 를 보낸다  <- searchMovScnInfo 가 없으면 403",
+          "cgv.co.kr" in sent.get("referer", ""), sent.get("referer"))
+
+
 def test_bot_security():
     print("\n[13] 봇 보안")
     import telegram_bot
@@ -442,6 +477,7 @@ def main():
         test_format()
         test_delivery_safety(fake)
         test_quiet_hours()
+        test_required_headers()
         test_bot_security()
     finally:
         fake.restore()
