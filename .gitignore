@@ -1,5 +1,13 @@
+# 비밀값 (절대 커밋 금지)
 .env
+
+# 파이썬
 __pycache__/
 *.pyc
+
+# 실행 부산물
+*.log
 state.json.tmp
-watcher.log
+
+# 에디터
+.claude/
