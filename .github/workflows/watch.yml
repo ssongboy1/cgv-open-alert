@@ -1,0 +1,64 @@
+# 주 트리거는 cron-job.org 가 보내는 repository_dispatch(5분 주기)다.
+# 한 번 깨어나면 워크플로 안에서 60초 간격으로 4회 감시하고 종료한다.
+# 러너 부팅(30~40초) 비용을 4회에 분산시키기 위해서다.
+# GitHub 자체 schedule 은 cron-job.org 장애 대비 안전망으로만 둔다.
+name: watch
+
+on:
+  repository_dispatch:
+    types: [poll]
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # state.json 커밋용
+
+concurrency:
+  group: watch
+  cancel-in-progress: false   # 실행 중 취소하면 state 커밋을 잃는다
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 감시 실행 (60초 간격으로 4분간)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set +e
+          timeout 240 python watcher.py --loop 60
+          code=$?
+          # 124 = timeout 이 정상적으로 끊은 것. 그 외 0 이 아니면 실패.
+          if [ $code -ne 0 ] && [ $code -ne 124 ]; then
+            echo "watcher 비정상 종료 (exit $code)"
+            exit $code
+          fi
+          echo "감시 정상 종료 (exit $code)"
+
+      # state.json 은 감시 기준선, config.json 은 텔레그램 봇으로 바꾼 설정.
+      # 둘 다 남겨야 다음 실행이 이어진다.
+      - name: 변경사항 커밋
+        if: always()
+        run: |
+          rm -f state.json.tmp
+          if git diff --quiet -- state.json config.json; then
+            echo "변경 없음"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json config.json
+          git commit -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

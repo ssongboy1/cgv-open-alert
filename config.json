@@ -1,0 +1,25 @@
+{
+  "targets": [
+    {
+      "site_no": "0345",
+      "site_nm": "대구",
+      "screen": "아이맥스",
+      "movie_keyword": "오디세이",
+      "notify": "schedule"
+    },
+    {
+      "site_no": "0089",
+      "site_nm": "센텀시티",
+      "screen": "아이맥스",
+      "movie_keyword": "",
+      "notify": "movie"
+    }
+  ],
+  "full_scan_every_runs": 30,
+  "notify_on_first_run": false,
+  "quiet_hours": {
+    "start": 1,
+    "end": 7,
+    "slowdown": 10
+  }
+}

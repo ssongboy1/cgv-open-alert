@@ -1,0 +1,48 @@
+# Actions IP에서 CGV가 403을 주는지 확인한다.
+# watch.yml 을 켜기 전에 이것부터 수동 실행할 것.
+name: smoke-test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: CGV 접근 가능 여부 확인
+        run: |
+          python - <<'PY'
+          import urllib.request, urllib.error
+
+          URL = ("https://cgv.co.kr/api/v1/booking/"
+                 "searchSscnsSchdExistList?coCd=A420&siteNo=0013")
+
+          def probe(label, ua):
+              req = urllib.request.Request(URL, headers={"User-Agent": ua})
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as r:
+                      body = r.read(160).decode("utf-8", "replace")
+                      print(f"{label:24} {r.status}  {body}")
+                      return r.status
+              except urllib.error.HTTPError as e:
+                  print(f"{label:24} {e.code}  (차단)")
+                  return e.code
+
+          import cgv_api
+          ok = probe("브라우저 UA (실사용)", cgv_api.UA)
+          probe("봇 UA (대조군)", "python-requests/2.32.0")
+
+          if ok != 200:
+              raise SystemExit(
+                  "\n실패: Actions IP에서 CGV가 403을 반환합니다.\n"
+                  "watch.yml 을 비활성화하고 로컬 실행으로 전환하세요.")
+          print("\n성공: Actions에서 CGV 조회가 가능합니다. watch.yml 을 켜도 됩니다.")
+          PY
