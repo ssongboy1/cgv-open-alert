@@ -20,6 +20,13 @@
       "screen": "아이맥스",
       "movie_keyword": "오디세이",
       "notify": "schedule"
+    },
+    {
+      "site_no": "0345",
+      "site_nm": "대구",
+      "screen": "ALL",
+      "movie_keyword": "스파이더맨",
+      "notify": "schedule"
     }
   ],
   "full_scan_every_runs": 30,
