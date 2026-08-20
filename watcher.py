@@ -32,6 +32,7 @@ import argparse
 import html
 import json
 import random
+import re
 import sys
 import time
 import traceback
@@ -163,9 +164,17 @@ def log(msg):
     print("[{}] {}".format(datetime.now(KST).strftime("%H:%M:%S"), msg), flush=True)
 
 
+_PUNCT = re.compile(r"[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]+")
+
+
 def normalize(text):
-    """공백 제거 + 소문자. 제목 매칭용."""
-    return "".join((text or "").split()).lower()
+    """제목 매칭용 정규화.
+
+    공백뿐 아니라 문장부호도 지운다. CGV 제목은 '스파이더맨-브랜드 뉴 데이'
+    처럼 붙임표를 쓰는데, 사용자는 보통 '스파이더맨 브랜드 뉴 데이'로
+    적는다. 붙임표를 남겨두면 이런 입력이 매칭되지 않는다.
+    """
+    return _PUNCT.sub("", (text or "").lower())
 
 
 def matches(mov_nm, keyword):
@@ -360,6 +369,11 @@ def run_once(cfg, state, dry_run=False):
 
     if not cfg["targets"]:
         log("감시 대상이 없습니다. 설정 프로그램에서 추가하세요.")
+        # 여기서 그냥 나가면 지워진 대상의 기준선 기록이 남는다. 나중에
+        # 다시 등록했을 때 '이미 기준선을 잡은 대상'으로 오해해, 그동안
+        # seen 이 비워진 상태에서 현재 회차를 몽땅 알리게 된다.
+        state["baselined"] = []
+        state["gates"] = {}
         return messages, state
 
     for target in cfg["targets"]:

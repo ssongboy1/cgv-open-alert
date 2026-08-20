@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""알리미 자체 점검.
+
+    python selftest.py          로직 테스트만 (CGV 호출 없음, 몇 초)
+    python selftest.py --live   실제 CGV/텔레그램 연결까지 확인
+
+CGV 응답을 가짜로 넣어 결정적으로 돌린다. 지금까지 실제로 터졌던
+버그들을 회귀 테스트로 박아둔다.
+"""
+
+from __future__ import annotations
+
+import copy
+import sys
+
+import cgv_api
+import merge_state
+import watcher
+
+PASS, FAIL = [], []
+
+
+def check(name, cond, detail=""):
+    (PASS if cond else FAIL).append(name)
+    print("  {} {}{}".format("PASS" if cond else "FAIL", name,
+                             "" if cond else "  <- " + str(detail)))
+
+
+# ------------------------------------------------------------ 가짜 CGV
+
+def row(site, mov_no, mov_nm, ymd, tm, scns="018", grade="아이맥스",
+        fmt="IMAX LASER 2D", free="10", total="241"):
+    return {"siteNo": site, "movNo": mov_no, "movNm": mov_nm, "scnYmd": ymd,
+            "scnsrtTm": tm, "scnsNo": scns, "tcscnsGradNm": grade,
+            "movkndDsplNm": fmt, "scnsNm": "IMAX관",
+            "frSeatCnt": free, "stcnt": total}
+
+
+class FakeCgv:
+    """지점별 시간표를 들고 있는 가짜 CGV."""
+
+    def __init__(self):
+        self.data = {}                 # site -> {ymd: [row, ...]}
+        self.gate_calls = 0
+        self.schedule_calls = 0
+
+    def reset(self):
+        self.data.clear()
+        self.gate_calls = self.schedule_calls = 0
+
+    def set(self, site, ymd, rows):
+        self.data.setdefault(site, {})[ymd] = rows
+
+    def install(self):
+        self._orig = (cgv_api.get_special_screens, cgv_api.get_open_dates,
+                      cgv_api.get_schedules, cgv_api._jitter)
+        cgv_api.get_special_screens = self._screens
+        cgv_api.get_open_dates = self._dates
+        cgv_api.get_schedules = self._sched
+        cgv_api._jitter = lambda: None
+        return self
+
+    def restore(self):
+        (cgv_api.get_special_screens, cgv_api.get_open_dates,
+         cgv_api.get_schedules, cgv_api._jitter) = self._orig
+
+    def _screens(self, site):
+        self.gate_calls += 1
+        movies = {r["movNm"] for d in self.data.get(site, {}).values() for r in d
+                  if r["tcscnsGradNm"] == "아이맥스"}
+        return [{"comCdvalNm": "아이맥스", "schdCnt": str(len(movies))}]
+
+    def _dates(self, site):
+        return sorted(self.data.get(site, {}))
+
+    def _sched(self, site, ymd):
+        self.schedule_calls += 1
+        return list(self.data.get(site, {}).get(ymd, []))
+
+
+def fresh_state():
+    return {"initialized": False, "run_no": 0, "seen": [], "gates": {}}
+
+
+def target(site="0345", nm="대구", screen="아이맥스", kw="오디세이",
+           notify="schedule"):
+    return {"site_no": site, "site_nm": nm, "screen": screen,
+            "movie_keyword": kw, "notify": notify}
+
+
+def config(*targets, **kw):
+    cfg = {"targets": list(targets), "full_scan_every_runs": 30,
+           "notify_on_first_run": False}
+    cfg.update(kw)
+    return cfg
+
+
+def run(cfg, state):
+    msgs, state = watcher.run_once(cfg, state, dry_run=True)
+    # dry_run 이면 deliver 가 seen 을 갱신하지 않으므로 실제 전송을 흉내낸다
+    seen = set(state["seen"])
+    for _text, keys, _kb in msgs:
+        seen.update(keys)
+    state["seen"] = sorted(seen)
+    return msgs, state
+
+
+# ------------------------------------------------------------ 테스트
+
+def test_core(fake):
+    print("\n[1] 기본 감지")
+    fake.reset()
+    fake.set("0345", "20260821", [
+        row("0345", "M1", "오디세이", "20260821", "0800"),
+        row("0345", "M1", "오디세이", "20260821", "1120"),
+    ])
+    cfg, st = config(target()), fresh_state()
+
+    msgs, st = run(cfg, st)
+    check("첫 실행은 알리지 않고 기준선만 잡는다", len(msgs) == 0, msgs)
+    check("기준선에 회차가 기록된다", len(st["seen"]) == 2, st["seen"])
+
+    msgs, st = run(cfg, st)
+    check("변화가 없으면 알리지 않는다", len(msgs) == 0, msgs)
+
+    # (가) 새 날짜가 열리는 경우 -- 실제 예매 오픈의 주된 형태.
+    #      게이트의 날짜 목록이 바뀌므로 즉시 잡혀야 한다.
+    fake.set("0345", "20260822", [row("0345", "M1", "오디세이", "20260822", "0800")])
+    msgs, st = run(cfg, st)
+    check("새 날짜가 열리면 즉시 알린다", len(msgs) == 1, msgs)
+    check("새로 생긴 회차만 담는다",
+          msgs and msgs[0][0].count("IMAX LASER 2D") == 1, msgs)
+
+    msgs, st = run(cfg, st)
+    check("같은 회차를 다시 알리지 않는다", len(msgs) == 0, msgs)
+
+    # (나) 새 영화가 걸리는 경우 -- 게이트의 편수가 바뀌므로 즉시 잡힌다.
+    fake.set("0777", "20260821", [row("0777", "M1", "오디세이", "20260821", "0800")])
+    cfg2 = config(target(site="0777", kw=""))
+    st2 = fresh_state()
+    _, st2 = run(cfg2, st2)
+    fake.set("0777", "20260821", fake.data["0777"]["20260821"] + [
+        row("0777", "M7", "신작", "20260821", "2000")])
+    msgs, st2 = run(cfg2, st2)
+    check("새 영화가 걸리면 즉시 알린다", len(msgs) == 1, msgs)
+
+    # (다) 이미 열린 날짜에 같은 영화의 회차만 추가되는 경우.
+    #      게이트(편수·날짜)가 그대로라 즉시로는 못 잡는다. 설계상 그렇고,
+    #      full_scan_every_runs 마다 도는 강제 전체 스캔이 안전망이다.
+    fake.set("0345", "20260822", fake.data["0345"]["20260822"] + [
+        row("0345", "M1", "오디세이", "20260822", "1500")])
+    msgs, st = run(cfg, st)
+    check("증회는 게이트로 즉시 잡히지 않는다 (설계상)", len(msgs) == 0, msgs)
+
+    st["run_no"] = cfg["full_scan_every_runs"]      # 다음 실행이 강제 전체 스캔
+    msgs, st = run(cfg, st)
+    check("증회도 강제 전체 스캔에서는 잡힌다  <- 안전망", len(msgs) == 1, msgs)
+
+
+def test_new_target(fake):
+    print("\n[2] 감시 대상 추가  (실제로 터졌던 버그)")
+    fake.reset()
+    fake.set("0128", "20260821", [
+        row("0128", "M1", "오디세이", "20260821", "0730"),
+        row("0128", "M1", "오디세이", "20260821", "1055"),
+    ])
+    cfg, st = config(target()), fresh_state()
+    _, st = run(cfg, st)
+
+    cfg["targets"].append(target(site="0128", nm="울산삼산"))
+    msgs, st = run(cfg, st)
+    check("돌고 있는 중에 대상을 추가해도 기존 회차를 알리지 않는다",
+          len(msgs) == 0, msgs)
+    check("추가한 대상의 회차가 기준선에 들어간다",
+          len([k for k in st["seen"] if k.startswith("0128|")]) == 2, st["seen"])
+
+    fake.set("0128", "20260822", [row("0128", "M1", "오디세이", "20260822", "1420")])
+    msgs, st = run(cfg, st)
+    check("추가한 뒤 새로 열린 회차는 알린다", len(msgs) == 1, msgs)
+
+
+def test_zero_match_target(fake):
+    print("\n[3] 아직 안 열린 영화 감시  (가장 중요한 경로)")
+    fake.reset()
+    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    cfg = config(target(kw="아바타"))
+    st = fresh_state()
+
+    msgs, st = run(cfg, st)
+    check("매칭 0건이어도 알림 없음", len(msgs) == 0, msgs)
+    check("매칭 0건이어도 기준선에 기록된다",
+          watcher.target_id(cfg["targets"][0]) in st["baselined"], st["baselined"])
+
+    # 기다리던 영화가 드디어 열렸다
+    fake.set("0345", "20260821", fake.data["0345"]["20260821"] + [
+        row("0345", "M9", "아바타-파이어 앤 애쉬", "20260821", "1900")])
+    msgs, st = run(cfg, st)
+    check("기다리던 영화가 열리면 반드시 알린다  <- 놓치면 알리미가 무의미",
+          len(msgs) == 1, msgs)
+
+
+def test_shared_site(fake):
+    print("\n[4] 한 지점에 대상 여러 개  (실제로 터졌던 버그)")
+    fake.reset()
+    fake.set("0345", "20260821", [
+        row("0345", "M1", "오디세이", "20260821", "0800"),
+        row("0345", "M2", "스파이더맨", "20260821", "1000", grade="일반",
+            fmt="2D"),
+    ])
+    cfg = config(target(kw="오디세이"),
+                 target(screen="ALL", kw="", notify="movie"))
+    st = fresh_state()
+    _, st = run(cfg, st)
+
+    fake.gate_calls = 0
+    fake.set("0345", "20260822", [
+        row("0345", "M1", "오디세이", "20260822", "1300"),
+        row("0345", "M3", "신작", "20260822", "1500", grade="일반", fmt="2D"),
+    ])
+    msgs, st = run(cfg, st)
+    check("게이트는 지점당 한 번만 조회한다", fake.gate_calls == 1, fake.gate_calls)
+    check("두 번째 대상도 게이트 변화를 본다  <- 놓치면 조용히 실패",
+          len(msgs) == 2, [m[0].splitlines()[0] for m in msgs])
+
+
+def test_granularity(fake):
+    print("\n[5] 알림 단위")
+    fake.reset()
+    fake.set("0089", "20260821", [
+        row("0089", "M5", "신작", "20260821", "1000"),
+        row("0089", "M5", "신작", "20260821", "1300"),
+        row("0089", "M5", "신작", "20260821", "1600"),
+    ])
+    cfg = config(target(site="0089", nm="센텀", kw="", notify="movie"))
+    st = fresh_state()
+    st["baselined"] = [watcher.target_id(cfg["targets"][0])]
+    st["initialized"] = True
+    msgs, st = run(cfg, st)
+    check("영화 단위는 회차가 3개여도 알림 1건", len(msgs) == 1, msgs)
+    check("영화 단위 메시지에 회차 수가 나온다",
+          msgs and "총 3회" in msgs[0][0], msgs and msgs[0][0])
+
+    fake.set("0089", "20260821", fake.data["0089"]["20260821"] + [
+        row("0089", "M5", "신작", "20260821", "1900")])
+    msgs, st = run(cfg, st)
+    check("같은 영화의 회차가 늘어도 다시 알리지 않는다", len(msgs) == 0, msgs)
+
+
+def test_filters(fake):
+    print("\n[6] 상영관 · 제목 필터")
+    fake.reset()
+    fake.set("0345", "20260821", [
+        row("0345", "M1", "오디세이", "20260821", "0800", grade="아이맥스"),
+        row("0345", "M2", "스파이더맨", "20260821", "1000", grade="4DX", fmt="4DX 2D"),
+        row("0345", "M3", "코난", "20260821", "1200", grade="일반", fmt="2D"),
+    ])
+    base = dict(fresh_state(), initialized=True)
+
+    def count(tg):
+        st = copy.deepcopy(base)
+        st["baselined"] = [watcher.target_id(tg)]
+        msgs, _ = run(config(tg), st)
+        return sum(m[0].count("\n  ") for m in msgs)
+
+    check("아이맥스 필터는 아이맥스만", count(target(kw="")) == 1)
+    check("4DX 필터는 4DX만", count(target(screen="4DX", kw="")) == 1)
+    check("전 상영관은 전부", count(target(screen="ALL", kw="")) == 3)
+    check("빈 키워드는 모든 영화", count(target(screen="ALL", kw="")) == 3)
+    check("제목 부분일치", count(target(screen="ALL", kw="스파이더")) == 1)
+    check("공백 무시 매칭", watcher.matches("스파이더맨-브랜드 뉴 데이", "스파이더맨브랜드"))
+    check("붙임표 무시 매칭  <- 사용자는 보통 띄어쓰기로 적는다",
+          watcher.matches("스파이더맨-브랜드 뉴 데이", "스파이더맨 브랜드 뉴 데이"))
+    check("대소문자 무시", watcher.matches("IMAX Special", "imax special"))
+
+
+def test_prune():
+    print("\n[7] state 정리")
+    keys = {
+        "0345|M1|20260819|0800|018",      # 어제
+        "0345|M1|20260821|0800|018",      # 미래
+        "M|0345|M1",                       # 살아있는 영화
+        "M|0345|M9",                       # 사라진 영화
+        "M|0128|M7",                       # 스캔 안 한 지점
+    }
+    import watcher as w
+    today = w.datetime.now(w.KST).strftime("%Y%m%d")
+    kept = w.prune_seen(keys, alive_movie_keys={"M|0345|M1"})
+    check("지난 상영일 회차는 버린다",
+          not any(k.startswith("0345|M1|20260819") for k in kept), kept)
+    check("스캔한 지점에서 사라진 영화 키는 버린다", "M|0345|M9" not in kept, kept)
+    check("살아있는 영화 키는 남긴다", "M|0345|M1" in kept, kept)
+    check("스캔 안 한 지점의 영화 키는 건드리지 않는다", "M|0128|M7" in kept, kept)
+
+
+def test_merge():
+    print("\n[8] 겹쳐 실행됐을 때 state 병합")
+    ours = {"seen": ["a", "b"], "baselined": ["t1"], "run_no": 12,
+            "tg_offset": 500, "gates": {"0345": {"x": 1}}, "initialized": True}
+    theirs = {"seen": ["b", "c"], "baselined": ["t2"], "run_no": 9,
+              "tg_offset": 480, "gates": {"0089": {"y": 2}}, "initialized": True}
+    m = merge_state.merge(ours, theirs)
+    check("알림 기록은 합집합  <- 잃으면 중복 알림", m["seen"] == ["a", "b", "c"], m["seen"])
+    check("기준선도 합집합  <- 잃으면 오픈을 놓침",
+          m["baselined"] == ["t1", "t2"], m["baselined"])
+    check("run_no 는 큰 쪽", m["run_no"] == 12)
+    check("tg_offset 은 큰 쪽  <- 작으면 명령 재처리", m["tg_offset"] == 500)
+    check("게이트는 양쪽 지점 모두 유지", set(m["gates"]) == {"0345", "0089"})
+
+
+def test_target_lifecycle(fake):
+    print("\n[9] 대상 삭제 후 재등록")
+    fake.reset()
+    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    tg = target()
+    cfg, st = config(tg), fresh_state()
+    _, st = run(cfg, st)
+    check("등록 후 기준선 있음", watcher.target_id(tg) in st["baselined"])
+
+    cfg["targets"] = []
+    _, st = run(cfg, st)
+    check("삭제하면 기준선 기록도 지운다", st["baselined"] == [], st["baselined"])
+
+    cfg["targets"] = [tg]
+    msgs, st = run(cfg, st)
+    check("재등록하면 다시 기준선부터  <- 기존 회차를 쏟지 않는다",
+          len(msgs) == 0, msgs)
+
+
+def test_format():
+    print("\n[10] 메시지 표기")
+    rows = [
+        row("0345", "M1", "오디세이", "20260821", "2440", free="9"),
+        row("0345", "M1", "오디세이", "20260821", "0800", free="0"),
+    ]
+    body = watcher.build_schedule_message("대구", "오디세이", rows, site_no="0345")
+    check("심야 회차를 24시 넘겨 표기 (앱과 동일)", "24:40" in body, body)
+    check("매진은 '매진'으로", "매진" in body, body)
+    check("잔여/총좌석 함께 표기", "9/241석" in body, body)
+    check("요일 표기", "8/21(금)" in body, body)
+    check("지점별 예매 링크", "siteNo=0345" in body, body)
+    kb = watcher.booking_button("0345", "대구")
+    check("버튼은 https (텔레그램 제약)", kb[0][0]["url"].startswith("https://"))
+    check("앱 열기 중계 페이지로 연결", "open.html" in kb[0][0]["url"])
+    check("HTML 특수문자 escape",
+          "&amp;" in watcher.build_schedule_message(
+              "대구", "A & B", rows, site_no="0345"))
+
+
+def test_delivery_safety(fake):
+    print("\n[11] 전송 실패 시 안전장치")
+    fake.reset()
+    import notifier
+    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    cfg = config(target())
+    st = dict(fresh_state(), initialized=True,
+              baselined=[watcher.target_id(cfg["targets"][0])])
+    msgs, st = watcher.run_once(cfg, st, dry_run=True)
+    check("알림 대상이 잡힌다", len(msgs) == 1)
+
+    orig = notifier.send
+    notifier.send = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("전송 실패"))
+    try:
+        watcher.deliver(msgs, st, dry_run=False)
+        failed = False
+    except RuntimeError:
+        failed = True
+    finally:
+        notifier.send = orig
+    check("전송이 실패하면 예외가 위로 올라간다", failed)
+    check("전송 실패한 회차는 seen 에 남지 않는다  <- 다음에 다시 시도",
+          not any(k in st["seen"] for k in msgs[0][1]), st["seen"])
+
+
+def test_quiet_hours():
+    print("\n[12] 새벽 감속")
+    cfg = {"quiet_hours": {"start": 1, "end": 7, "slowdown": 10}}
+    import datetime as dt
+    import unittest.mock as mock
+    results = {}
+    for h in (0, 1, 6, 7, 12, 23):
+        with mock.patch.object(watcher, "datetime") as fake_dt:
+            fake_dt.now.return_value = dt.datetime(2026, 8, 20, h, tzinfo=watcher.KST)
+            results[h] = watcher.in_quiet_hours(cfg)
+    check("01~06시는 감속", all(results[h] for h in (1, 6)), results)
+    check("00시·07시 이후는 정상", not any(results[h] for h in (0, 7, 12, 23)), results)
+    check("설정이 없으면 감속 안 함", not watcher.in_quiet_hours({}))
+
+
+def test_bot_security():
+    print("\n[13] 봇 보안")
+    import telegram_bot
+    src = open("telegram_bot.py", encoding="utf-8").read()
+    check("등록된 챗 외에는 무시한다", src.count("!= my_chat") >= 2)
+    check("설정한 챗으로만 보낸다", "credentials()" in src)
+
+
+# ------------------------------------------------------------ 실연결
+
+def test_live():
+    print("\n[L] 실제 연결")
+    try:
+        ok, cnt = cgv_api.has_imax("0345")
+        check("CGV 조회 (대구 아이맥스)", ok, cnt)
+    except Exception as exc:
+        check("CGV 조회", False, exc)
+
+    try:
+        cgv_api.UA, saved = "python-requests/2.32.0", cgv_api.UA
+        blocked = False
+        try:
+            cgv_api.get_special_screens("0345")
+        except cgv_api.CloudflareBlocked:
+            blocked = True
+        finally:
+            cgv_api.UA = saved
+        check("봇 UA 는 403 으로 차단됨 (UA 상수가 살아있다는 증거)", blocked)
+    except Exception as exc:
+        check("403 경로", False, exc)
+
+    try:
+        import notifier
+        token, chat = notifier.credentials()
+        info = notifier._call(token, "getMe", {})
+        check("텔레그램 봇 연결", info.get("ok"), info)
+        check("챗 ID 설정됨", bool(chat))
+    except Exception as exc:
+        check("텔레그램", False, exc)
+
+
+def main():
+    fake = FakeCgv().install()
+    try:
+        test_core(fake)
+        test_new_target(fake)
+        test_zero_match_target(fake)
+        test_shared_site(fake)
+        test_granularity(fake)
+        test_filters(fake)
+        test_prune()
+        test_merge()
+        test_target_lifecycle(fake)
+        test_format()
+        test_delivery_safety(fake)
+        test_quiet_hours()
+        test_bot_security()
+    finally:
+        fake.restore()
+
+    if "--live" in sys.argv:
+        test_live()
+
+    print("\n" + "=" * 52)
+    print("통과 {}건 / 실패 {}건".format(len(PASS), len(FAIL)))
+    for name in FAIL:
+        print("  실패: " + name)
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

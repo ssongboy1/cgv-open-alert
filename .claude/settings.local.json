@@ -8,7 +8,13 @@
       "Bash(git stash *)",
       "Bash(gh run *)",
       "Bash(python -c \"import watcher, telegram_bot, notifier, cgv_api, merge_state; print\\('임포트 OK'\\)\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python selftest.py)",
+      "Bash(python -)",
+      "Bash(python selftest.py --live)",
+      "Bash(git pull *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)"
     ]
   }
 }
