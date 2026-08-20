@@ -35,6 +35,7 @@ import random
 import sys
 import time
 import traceback
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -186,6 +187,22 @@ def screen_label(row):
     return row.get("movkndDsplNm") or row.get("scnsNm") or "일반"
 
 
+def booking_url(site_no, site_nm):
+    """해당 지점 예매 화면으로 바로 가는 링크.
+
+    cgv.co.kr 은 App Links 를 설정해두지 않아서 이 링크는 브라우저로 열린다.
+    (모바일 브라우저가 '앱으로 보기'를 띄워준다.)
+    앱을 직접 여는 cgv:// 스킴은 인라인 버튼 URL 로 쓸 수 없어서 본문에 넣는다.
+    """
+    return "{}/cinema?siteNo={}&siteNm={}".format(
+        BOOK_URL, site_no, urllib.parse.quote(site_nm))
+
+
+def booking_button(site_no, site_nm):
+    return [[{"text": "🎟 CGV {} 예매하러 가기".format(site_nm),
+              "url": booking_url(site_no, site_nm)}]]
+
+
 # ---------------------------------------------------------------- 키
 
 def schedule_key(site_no, row):
@@ -230,7 +247,7 @@ def prune_seen(seen, alive_movie_keys=None):
 
 # ---------------------------------------------------------------- 메시지
 
-def build_schedule_message(site_nm, mov_nm, rows):
+def build_schedule_message(site_nm, mov_nm, rows, site_no=""):
     esc = html.escape
     lines = [
         "\U0001F3AC <b>CGV 예매 오픈!</b>",
@@ -246,12 +263,12 @@ def build_schedule_message(site_nm, mov_nm, rows):
             esc(screen_label(row)),
             fmt_seats(row),
         ))
-    lines += ["", "\U0001F517 {}".format(BOOK_URL), "",
+    lines += ["", "\U0001F517 {}".format(booking_url(site_no, site_nm)), "",
               datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")]
     return "\n".join(lines)
 
 
-def build_movie_message(site_nm, mov_nm, rows):
+def build_movie_message(site_nm, mov_nm, rows, site_no=""):
     esc = html.escape
     dates = sorted({r["scnYmd"] for r in rows})
     screens = sorted({screen_label(r) for r in rows})
@@ -267,7 +284,7 @@ def build_movie_message(site_nm, mov_nm, rows):
         "  기간     {}".format(period),
         "  회차     총 {}회".format(len(rows)),
         "",
-        "\U0001F517 {}".format(BOOK_URL),
+        "\U0001F517 {}".format(booking_url(site_no, site_nm)),
         "",
         datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST"),
     ])
@@ -371,7 +388,8 @@ def run_once(cfg, state, dry_run=False):
 
         if unit == "movie":
             for key, (mov_nm, group) in fresh.items():
-                messages.append((build_movie_message(site_nm, mov_nm, group), [key]))
+                messages.append((build_movie_message(site_nm, mov_nm, group, site_no),
+                                 [key], booking_button(site_no, site_nm)))
         else:
             by_movie = {}
             for key, (mov_nm, group) in fresh.items():
@@ -379,7 +397,8 @@ def run_once(cfg, state, dry_run=False):
                 entry[0].extend(group)
                 entry[1].append(key)
             for mov_nm, (group, keys) in by_movie.items():
-                messages.append((build_schedule_message(site_nm, mov_nm, group), keys))
+                messages.append((build_schedule_message(site_nm, mov_nm, group, site_no),
+                                 keys, booking_button(site_no, site_nm)))
 
     state["seen"] = sorted(prune_seen(seen, alive_movie_keys or None))
     state["gates"] = gates
@@ -392,13 +411,13 @@ def deliver(messages, state, dry_run):
     """알림 전송. 전송에 성공한 것만 seen 에 넣는다."""
     seen = set(state["seen"])
     sent = 0
-    for text, keys in messages:
+    for text, keys, keyboard in messages:
         if dry_run:
             print("\n----- (dry-run) 전송하지 않음 -----")
             print(text)
             print("-----------------------------------\n")
             continue
-        notifier.send(text)
+        notifier.send(text, keyboard=keyboard)
         seen.update(keys)
         sent += 1
         log("  알림 전송 완료")

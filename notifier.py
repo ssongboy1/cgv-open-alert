@@ -59,7 +59,8 @@ def _call(token, method, payload, timeout=15):
         raise RuntimeError("텔레그램 API 오류 {}: {}".format(exc.code, body)) from exc
 
 
-def send(text, token=None, chat_id=None):
+def send(text, token=None, chat_id=None, keyboard=None):
+    """keyboard 는 [[{text, url}]] 형태. 인라인 버튼 URL 은 https 만 허용된다."""
     env_token, env_chat = credentials()
     token = token or env_token
     chat_id = chat_id or env_chat
@@ -68,12 +69,15 @@ def send(text, token=None, chat_id=None):
             "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 가 없습니다. "
             "설정 프로그램에서 입력하거나 환경변수로 넣으세요."
         )
-    return _call(token, "sendMessage", {
+    payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
-    })
+    }
+    if keyboard:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+    return _call(token, "sendMessage", payload)
 
 
 def discover_chat_id(token):
