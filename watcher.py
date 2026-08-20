@@ -208,10 +208,10 @@ def app_open_url(site_no, site_nm):
 
 
 def booking_button(site_no, site_nm):
-    return [
-        [{"text": "📱 CGV 앱으로 열기", "url": app_open_url(site_no, site_nm)}],
-        [{"text": "🌐 웹으로 예매하기", "url": booking_url(site_no, site_nm)}],
-    ]
+    # 앱이 없거나 실패하면 중계 페이지가 알아서 웹 예매로 떨어뜨리므로
+    # 버튼은 하나면 충분하다. 본문에도 웹 주소가 그대로 들어간다.
+    return [[{"text": "📱 CGV 앱으로 열기",
+              "url": app_open_url(site_no, site_nm)}]]
 
 
 # ---------------------------------------------------------------- 키
