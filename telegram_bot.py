@@ -19,7 +19,7 @@ config 의 chat_id 와 같은 대화에서 온 명령만 처리한다.
 
 from __future__ import annotations
 
-import json
+import difflib
 
 import cgv_api
 import notifier
@@ -147,6 +147,93 @@ def movie_view():
                "callback_data": "mv|all"}]])
 
 
+def verify_movie(keyword):
+    """입력한 제목을 CGV 영화 목록과 대조한다.
+
+    오타를 걸러내려는 것이다. 그냥 저장해버리면 영영 매칭이 안 돼도
+    사용자는 "아직 안 열렸나 보다" 하고 기다리게 된다.
+
+    searchAtktTopPostrList 는 예매 중인 영화뿐 아니라 개봉예정작도 준다.
+    예매가 아직 안 열린 영화는 atktRate 가 비어 있다(실측 확인). 그래서
+    개봉예정작까지 이 한 번의 조회로 검증할 수 있다.
+
+    반환: ([{movNm, upcoming}], [비슷한 제목들])
+    """
+    import watcher
+
+    try:
+        movies = [m for m in cgv_api.get_now_playing() if m.get("movNm")]
+    except Exception:
+        return [], []                       # 조회 실패 시 검증을 건너뛴다
+
+    titles = [m["movNm"] for m in movies]
+    hits = [
+        {"movNm": m["movNm"],
+         "upcoming": not m.get("atktRate") or m["atktRate"] == "0"}
+        for m in movies if watcher.matches(m["movNm"], keyword)
+    ]
+    if hits:
+        return hits, []
+
+    # 정규화한 제목으로 비슷한 것을 찾는다 (띄어쓰기·대소문자 무시)
+    norm = {watcher.normalize(t): t for t in titles}
+    close = difflib.get_close_matches(
+        watcher.normalize(keyword), list(norm), n=3, cutoff=0.45)
+
+    # 한두 글자만 겹쳐도 걸리도록 부분일치도 함께 본다
+    key = watcher.normalize(keyword)
+    if len(key) >= 2:
+        for n, original in norm.items():
+            if original in [norm[c] for c in close]:
+                continue
+            if any(key[i:i + 2] in n for i in range(len(key) - 1)):
+                close.append(n)
+                if len(close) >= 5:
+                    break
+
+    return [], [norm[c] for c in close]
+
+
+def movie_confirm_view(keyword, suggestions):
+    lines = [
+        "⚠️ <b>{}</b> 를 CGV 목록에서 찾지 못했습니다.".format(html_escape(keyword)),
+        "",
+        "이 목록에는 <b>개봉예정작도 포함</b>돼 있습니다. 그래서 못 찾았다면",
+        "<b>오타일 가능성이 높습니다.</b>",
+        "",
+        "아직 CGV에 등록조차 안 된 먼 미래 작품이면 그대로 등록해도 됩니다.",
+    ]
+    if suggestions:
+        lines += ["", "혹시 이건가요?"]
+    keyboard = [[{"text": "✅ 그대로 등록 (오타 아님)", "callback_data": "mvkeep"}]]
+    for i, title in enumerate(suggestions[:5]):
+        keyboard.append([{"text": "🔎 " + title[:50],
+                          "callback_data": "mvpick|{}".format(i)}])
+    keyboard.append([{"text": "✖ 취소", "callback_data": "mvcancel"}])
+    return "\n".join(lines), keyboard
+
+
+def html_escape(text):
+    import html
+    return html.escape(str(text))
+
+
+def _hit_note(hits):
+    """대조 결과를 사람 말로 풀어준다."""
+    lines = []
+    for hit in hits[:3]:
+        if hit["upcoming"]:
+            lines.append("🕒 <b>{}</b> — 개봉예정작입니다. 예매가 열리면 알려드립니다."
+                         .format(html_escape(hit["movNm"])))
+        else:
+            lines.append("🎬 <b>{}</b> — 이미 예매 중입니다. 지금 열려 있는 회차는 "
+                         "기준선으로 두고, 새로 생기는 회차만 알려드립니다."
+                         .format(html_escape(hit["movNm"])))
+    if len(hits) > 3:
+        lines.append("… 외 {}편이 제목에 걸립니다.".format(len(hits) - 3))
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------- 처리
 
 def handle(cfg, state, describe, check_fn, long_poll=0):
@@ -236,6 +323,35 @@ def _one(upd, cfg, state, draft, describe, check_fn, my_chat):
                  "추가했습니다.\n\n<b>{}</b>".format(describe(target)))
             return True, {}, True
 
+        elif data == "mvkeep":
+            # 미개봉작이라 목록에 없는 경우. 입력한 그대로 등록한다.
+            keyword = draft.get("pending_movie", "")
+            target = _finish(draft, keyword)
+            cfg.setdefault("targets", []).append(target)
+            edit(chat_id, msg_id,
+                 "추가했습니다.\n\n<b>{}</b>\n\n"
+                 "아직 상영 목록에 없는 제목이라, 이 영화가 걸리는 순간 알려드립니다.\n"
+                 "나중에 <b>/check</b> 로 실제 매칭되는지 확인할 수 있습니다."
+                 .format(describe(target)))
+            return True, {}, True
+
+        elif data.startswith("mvpick|"):
+            # 제안한 제목 중 하나를 골랐다. 오타를 바로잡은 경우.
+            idx = int(data.split("|", 1)[1])
+            picks = draft.get("suggestions") or []
+            if not (0 <= idx < len(picks)):
+                edit(chat_id, msg_id, "고른 항목을 찾지 못했습니다. /add 로 다시 시도하세요.")
+                return False, {}, True
+            target = _finish(draft, picks[idx])
+            cfg.setdefault("targets", []).append(target)
+            edit(chat_id, msg_id,
+                 "추가했습니다.\n\n<b>{}</b>".format(describe(target)))
+            return True, {}, True
+
+        elif data == "mvcancel":
+            edit(chat_id, msg_id, "취소했습니다. /add 로 다시 시작하세요.")
+            return False, {}, True
+
         elif data.startswith("del|"):
             idx = int(data[4:])
             targets = cfg.get("targets", [])
@@ -259,9 +375,19 @@ def _one(upd, cfg, state, draft, describe, check_fn, my_chat):
         return False, draft, False
 
     if draft.get("awaiting_movie") and not text.startswith("/"):
+        hits, suggestions = verify_movie(text)
+        if not hits:
+            # 오타일 수 있다. 바로 저장하지 않고 확인을 받는다.
+            draft["pending_movie"] = text
+            draft["suggestions"] = suggestions
+            body, kb = movie_confirm_view(text, suggestions)
+            send(body, kb)
+            return False, draft, True
+
         target = _finish(draft, text)
         cfg.setdefault("targets", []).append(target)
-        send("추가했습니다.\n\n<b>{}</b>".format(describe(target)))
+        send("추가했습니다.\n\n<b>{}</b>\n\n{}".format(
+            describe(target), _hit_note(hits)))
         return True, {}, True
 
     cmd = text.split()[0].lower().split("@")[0]

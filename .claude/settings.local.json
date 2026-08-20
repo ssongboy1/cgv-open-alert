@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PYTHONIOENCODING=utf-8)",
+      "Bash(python -c \"import telegram_bot, watcher, notifier, cgv_api, merge_state; print\\('전 모듈 임포트 OK'\\)\")",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git stash *)"
+    ]
+  }
+}
