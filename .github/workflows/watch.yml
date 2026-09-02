@@ -70,8 +70,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           for attempt in 1 2 3; do
-            git fetch -q origin "${GITHUB_REF_NAME}"
-            git reset -q --hard "origin/${GITHUB_REF_NAME}"
+            if ! git fetch -q origin "${GITHUB_REF_NAME}"; then
+              echo "fetch 실패. 다시 시도 ($attempt/3)"
+              sleep 3
+              continue
+            fi
+            if ! git reset -q --hard "origin/${GITHUB_REF_NAME}"; then
+              echo "reset 실패. 다시 시도 ($attempt/3)"
+              sleep 3
+              continue
+            fi
 
             python merge_state.py /tmp/ours-state.json state.json
             if [ -n "$CONFIG_CHANGED" ]; then

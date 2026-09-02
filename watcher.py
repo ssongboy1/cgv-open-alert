@@ -251,11 +251,16 @@ def movie_key(site_no, row):
 def prune_seen(seen, alive_movie_keys=None):
     """오래된 키를 버려 state.json 이 무한히 커지지 않게 한다.
 
-    * 회차 키(5조각): 상영일자가 오늘보다 이전이면 버린다.
+    * 회차 키(5조각): 상영일자가 어제보다 이전이면 버린다.
     * 영화 키('M|'): 그 지점을 이번에 전체 스캔했는데 더 이상 안 걸려 있으면 버린다.
       (스캔하지 않은 지점의 영화 키는 건드리지 않는다)
+
+    하루(어제까지) 여유를 두는 이유: 자정이 지나 '오늘'이 바뀌는 순간 바로
+    지워버리면, CGV가 자정 넘어서도 한동안 어제 날짜를 열린 날짜 목록에
+    남겨두는 사이에 정기 전체 스캔이 돌아 '이미 알림 보낸 어제 회차'를
+    seen에서 사라진 채로 다시 '새 회차'로 오인해 중복 알림을 보내게 된다.
     """
-    today = datetime.now(KST).strftime("%Y%m%d")
+    cutoff = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
     scanned_sites = {k.split("|")[1] for k in (alive_movie_keys or set())}
     kept = set()
     for key in seen:
@@ -266,7 +271,7 @@ def prune_seen(seen, alive_movie_keys=None):
                 continue
             kept.add(key)
             continue
-        if len(parts) == 5 and parts[2] < today:
+        if len(parts) == 5 and parts[2] < cutoff:
             continue
         kept.add(key)
     return kept
