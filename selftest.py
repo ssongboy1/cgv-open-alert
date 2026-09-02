@@ -12,12 +12,26 @@ from __future__ import annotations
 
 import copy
 import sys
+from datetime import datetime, timedelta
 
 import cgv_api
 import merge_state
 import watcher
 
 PASS, FAIL = [], []
+
+
+def ymd(offset):
+    """오늘 기준 상영일자.
+
+    상영일자를 고정 날짜로 박아두면 그 날이 지나는 순간 prune_seen 이
+    회차 키를 정상적으로 버리고, 그 탓에 멀쩡한 로직 테스트가 통째로
+    거짓 실패한다. 실제로 [1][2] 가 그렇게 몇 주 동안 죽어 있었다.
+    """
+    return (datetime.now(watcher.KST) + timedelta(days=offset)).strftime("%Y%m%d")
+
+
+D1, D2 = ymd(1), ymd(2)          # 감지 테스트용 '앞으로 열릴' 상영일자
 
 
 def check(name, cond, detail=""):
@@ -110,9 +124,9 @@ def run(cfg, state):
 def test_core(fake):
     print("\n[1] 기본 감지")
     fake.reset()
-    fake.set("0345", "20260821", [
-        row("0345", "M1", "오디세이", "20260821", "0800"),
-        row("0345", "M1", "오디세이", "20260821", "1120"),
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800"),
+        row("0345", "M1", "오디세이", D1, "1120"),
     ])
     cfg, st = config(target()), fresh_state()
 
@@ -125,7 +139,7 @@ def test_core(fake):
 
     # (가) 새 날짜가 열리는 경우 -- 실제 예매 오픈의 주된 형태.
     #      게이트의 날짜 목록이 바뀌므로 즉시 잡혀야 한다.
-    fake.set("0345", "20260822", [row("0345", "M1", "오디세이", "20260822", "0800")])
+    fake.set("0345", D2, [row("0345", "M1", "오디세이", D2, "0800")])
     msgs, st = run(cfg, st)
     check("새 날짜가 열리면 즉시 알린다", len(msgs) == 1, msgs)
     check("새로 생긴 회차만 담는다",
@@ -135,20 +149,20 @@ def test_core(fake):
     check("같은 회차를 다시 알리지 않는다", len(msgs) == 0, msgs)
 
     # (나) 새 영화가 걸리는 경우 -- 게이트의 편수가 바뀌므로 즉시 잡힌다.
-    fake.set("0777", "20260821", [row("0777", "M1", "오디세이", "20260821", "0800")])
+    fake.set("0777", D1, [row("0777", "M1", "오디세이", D1, "0800")])
     cfg2 = config(target(site="0777", kw=""))
     st2 = fresh_state()
     _, st2 = run(cfg2, st2)
-    fake.set("0777", "20260821", fake.data["0777"]["20260821"] + [
-        row("0777", "M7", "신작", "20260821", "2000")])
+    fake.set("0777", D1, fake.data["0777"][D1] + [
+        row("0777", "M7", "신작", D1, "2000")])
     msgs, st2 = run(cfg2, st2)
     check("새 영화가 걸리면 즉시 알린다", len(msgs) == 1, msgs)
 
     # (다) 이미 열린 날짜에 같은 영화의 회차만 추가되는 경우.
     #      게이트(편수·날짜)가 그대로라 즉시로는 못 잡는다. 설계상 그렇고,
     #      full_scan_every_runs 마다 도는 강제 전체 스캔이 안전망이다.
-    fake.set("0345", "20260822", fake.data["0345"]["20260822"] + [
-        row("0345", "M1", "오디세이", "20260822", "1500")])
+    fake.set("0345", D2, fake.data["0345"][D2] + [
+        row("0345", "M1", "오디세이", D2, "1500")])
     msgs, st = run(cfg, st)
     check("증회는 게이트로 즉시 잡히지 않는다 (설계상)", len(msgs) == 0, msgs)
 
@@ -160,9 +174,9 @@ def test_core(fake):
 def test_new_target(fake):
     print("\n[2] 감시 대상 추가  (실제로 터졌던 버그)")
     fake.reset()
-    fake.set("0128", "20260821", [
-        row("0128", "M1", "오디세이", "20260821", "0730"),
-        row("0128", "M1", "오디세이", "20260821", "1055"),
+    fake.set("0128", D1, [
+        row("0128", "M1", "오디세이", D1, "0730"),
+        row("0128", "M1", "오디세이", D1, "1055"),
     ])
     cfg, st = config(target()), fresh_state()
     _, st = run(cfg, st)
@@ -174,7 +188,7 @@ def test_new_target(fake):
     check("추가한 대상의 회차가 기준선에 들어간다",
           len([k for k in st["seen"] if k.startswith("0128|")]) == 2, st["seen"])
 
-    fake.set("0128", "20260822", [row("0128", "M1", "오디세이", "20260822", "1420")])
+    fake.set("0128", D2, [row("0128", "M1", "오디세이", D2, "1420")])
     msgs, st = run(cfg, st)
     check("추가한 뒤 새로 열린 회차는 알린다", len(msgs) == 1, msgs)
 
@@ -182,7 +196,7 @@ def test_new_target(fake):
 def test_zero_match_target(fake):
     print("\n[3] 아직 안 열린 영화 감시  (가장 중요한 경로)")
     fake.reset()
-    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
     cfg = config(target(kw="아바타"))
     st = fresh_state()
 
@@ -192,8 +206,8 @@ def test_zero_match_target(fake):
           watcher.target_id(cfg["targets"][0]) in st["baselined"], st["baselined"])
 
     # 기다리던 영화가 드디어 열렸다
-    fake.set("0345", "20260821", fake.data["0345"]["20260821"] + [
-        row("0345", "M9", "아바타-파이어 앤 애쉬", "20260821", "1900")])
+    fake.set("0345", D1, fake.data["0345"][D1] + [
+        row("0345", "M9", "아바타-파이어 앤 애쉬", D1, "1900")])
     msgs, st = run(cfg, st)
     check("기다리던 영화가 열리면 반드시 알린다  <- 놓치면 알리미가 무의미",
           len(msgs) == 1, msgs)
@@ -202,9 +216,9 @@ def test_zero_match_target(fake):
 def test_shared_site(fake):
     print("\n[4] 한 지점에 대상 여러 개  (실제로 터졌던 버그)")
     fake.reset()
-    fake.set("0345", "20260821", [
-        row("0345", "M1", "오디세이", "20260821", "0800"),
-        row("0345", "M2", "스파이더맨", "20260821", "1000", grade="일반",
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800"),
+        row("0345", "M2", "스파이더맨", D1, "1000", grade="일반",
             fmt="2D"),
     ])
     cfg = config(target(kw="오디세이"),
@@ -213,9 +227,9 @@ def test_shared_site(fake):
     _, st = run(cfg, st)
 
     fake.gate_calls = 0
-    fake.set("0345", "20260822", [
-        row("0345", "M1", "오디세이", "20260822", "1300"),
-        row("0345", "M3", "신작", "20260822", "1500", grade="일반", fmt="2D"),
+    fake.set("0345", D2, [
+        row("0345", "M1", "오디세이", D2, "1300"),
+        row("0345", "M3", "신작", D2, "1500", grade="일반", fmt="2D"),
     ])
     msgs, st = run(cfg, st)
     check("게이트는 지점당 한 번만 조회한다", fake.gate_calls == 1, fake.gate_calls)
@@ -226,10 +240,10 @@ def test_shared_site(fake):
 def test_granularity(fake):
     print("\n[5] 알림 단위")
     fake.reset()
-    fake.set("0089", "20260821", [
-        row("0089", "M5", "신작", "20260821", "1000"),
-        row("0089", "M5", "신작", "20260821", "1300"),
-        row("0089", "M5", "신작", "20260821", "1600"),
+    fake.set("0089", D1, [
+        row("0089", "M5", "신작", D1, "1000"),
+        row("0089", "M5", "신작", D1, "1300"),
+        row("0089", "M5", "신작", D1, "1600"),
     ])
     cfg = config(target(site="0089", nm="센텀", kw="", notify="movie"))
     st = fresh_state()
@@ -240,8 +254,8 @@ def test_granularity(fake):
     check("영화 단위 메시지에 회차 수가 나온다",
           msgs and "총 3회" in msgs[0][0], msgs and msgs[0][0])
 
-    fake.set("0089", "20260821", fake.data["0089"]["20260821"] + [
-        row("0089", "M5", "신작", "20260821", "1900")])
+    fake.set("0089", D1, fake.data["0089"][D1] + [
+        row("0089", "M5", "신작", D1, "1900")])
     msgs, st = run(cfg, st)
     check("같은 영화의 회차가 늘어도 다시 알리지 않는다", len(msgs) == 0, msgs)
 
@@ -249,10 +263,10 @@ def test_granularity(fake):
 def test_filters(fake):
     print("\n[6] 상영관 · 제목 필터")
     fake.reset()
-    fake.set("0345", "20260821", [
-        row("0345", "M1", "오디세이", "20260821", "0800", grade="아이맥스"),
-        row("0345", "M2", "스파이더맨", "20260821", "1000", grade="4DX", fmt="4DX 2D"),
-        row("0345", "M3", "코난", "20260821", "1200", grade="일반", fmt="2D"),
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800", grade="아이맥스"),
+        row("0345", "M2", "스파이더맨", D1, "1000", grade="4DX", fmt="4DX 2D"),
+        row("0345", "M3", "코난", D1, "1200", grade="일반", fmt="2D"),
     ])
     base = dict(fresh_state(), initialized=True)
 
@@ -275,18 +289,24 @@ def test_filters(fake):
 
 def test_prune():
     print("\n[7] state 정리")
+    old, yesterday, today = ymd(-3), ymd(-1), ymd(0)
     keys = {
-        "0345|M1|20260819|0800|018",      # 어제
-        "0345|M1|20260821|0800|018",      # 미래
+        "0345|M1|{}|0800|018".format(old),        # 한참 지난 회차
+        "0345|M1|{}|0800|018".format(yesterday),  # 어제 회차
+        "0345|M1|{}|0800|018".format(today),      # 오늘 회차
+        "0345|M1|{}|0800|018".format(D1),         # 앞으로 열릴 회차
         "M|0345|M1",                       # 살아있는 영화
         "M|0345|M9",                       # 사라진 영화
         "M|0128|M7",                       # 스캔 안 한 지점
     }
-    import watcher as w
-    today = w.datetime.now(w.KST).strftime("%Y%m%d")
-    kept = w.prune_seen(keys, alive_movie_keys={"M|0345|M1"})
-    check("지난 상영일 회차는 버린다",
-          not any(k.startswith("0345|M1|20260819") for k in kept), kept)
+    kept = watcher.prune_seen(keys, alive_movie_keys={"M|0345|M1"})
+    check("한참 지난 상영일 회차는 버린다",
+          not any(old in k for k in kept), kept)
+    check("어제 회차는 하루 더 남긴다  <- CGV가 자정 넘어도 어제를 열어둬서, "
+          "지우면 이미 알린 회차를 새 회차로 다시 알린다",
+          any(yesterday in k for k in kept), kept)
+    check("오늘과 앞으로의 회차는 남긴다",
+          any(today in k for k in kept) and any(D1 in k for k in kept), kept)
     check("스캔한 지점에서 사라진 영화 키는 버린다", "M|0345|M9" not in kept, kept)
     check("살아있는 영화 키는 남긴다", "M|0345|M1" in kept, kept)
     check("스캔 안 한 지점의 영화 키는 건드리지 않는다", "M|0128|M7" in kept, kept)
@@ -310,7 +330,7 @@ def test_merge():
 def test_target_lifecycle(fake):
     print("\n[9] 대상 삭제 후 재등록")
     fake.reset()
-    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
     tg = target()
     cfg, st = config(tg), fresh_state()
     _, st = run(cfg, st)
@@ -328,6 +348,8 @@ def test_target_lifecycle(fake):
 
 def test_format():
     print("\n[10] 메시지 표기")
+    # 요일 표기를 검증해야 하므로 여기만 날짜를 고정한다 (2026-08-21 = 금요일).
+    # 이 테스트는 prune_seen 을 타지 않아 날짜가 지나도 썩지 않는다.
     rows = [
         row("0345", "M1", "오디세이", "20260821", "2440", free="9"),
         row("0345", "M1", "오디세이", "20260821", "0800", free="0"),
@@ -350,7 +372,7 @@ def test_delivery_safety(fake):
     print("\n[11] 전송 실패 시 안전장치")
     fake.reset()
     import notifier
-    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
     cfg = config(target())
     st = dict(fresh_state(), initialized=True,
               baselined=[watcher.target_id(cfg["targets"][0])])
@@ -428,7 +450,7 @@ def test_block_recovery(fake):
     import pathlib
     import notifier
     import telegram_bot
-    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
 
     cfg = config(target())
     sent = []
