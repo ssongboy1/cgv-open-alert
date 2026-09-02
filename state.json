@@ -68,6 +68,7 @@
     }
   },
   "initialized": true,
+  "last_block_warn": 1788334520.831103,
   "last_run": "2026-09-02T16:33:43+09:00",
   "run_no": 11118,
   "seen": [
