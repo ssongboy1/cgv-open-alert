@@ -421,6 +421,50 @@ def test_required_headers():
           "cgv.co.kr" in sent.get("referer", ""), sent.get("referer"))
 
 
+def test_block_recovery(fake):
+    print("\n[15] 403 차단과 복구 알림")
+    fake.reset()
+    import tempfile
+    import pathlib
+    import notifier
+    import telegram_bot
+    fake.set("0345", "20260821", [row("0345", "M1", "오디세이", "20260821", "0800")])
+
+    cfg = config(target())
+    sent = []
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "state.json"
+    saved = (watcher.STATE_FILE, notifier.send, telegram_bot.handle)
+    watcher.STATE_FILE = tmp
+    notifier.send = lambda text, **kw: sent.append(text)
+    telegram_bot.handle = lambda *a, **kw: (False, None)
+    try:
+        watcher.save_state(dict(fresh_state(), initialized=True,
+                                baselined=[watcher.target_id(cfg["targets"][0])]))
+
+        watcher.mark_blocked()
+        check("403 이면 차단 기록이 남는다",
+              watcher.load_state().get("blocked") is True)
+
+        watcher.cycle(cfg, dry_run=False)
+        check("정상으로 돌아오면 복구를 알린다  <- 없으면 죽은 줄 안다",
+              any("정상으로 돌아왔습니다" in t for t in sent), sent)
+        check("복구를 알렸으면 차단 기록을 지운다",
+              not watcher.load_state().get("blocked"))
+
+        sent.clear()
+        watcher.cycle(cfg, dry_run=False)
+        check("복구 알림은 한 번만 보낸다",
+              not any("정상으로 돌아왔습니다" in t for t in sent), sent)
+
+        notifier.send = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("전송 실패"))
+        watcher.mark_blocked()
+        watcher.cycle(cfg, dry_run=False)
+        check("복구 알림 전송이 실패하면 기록을 남겨 다음에 다시 시도한다",
+              watcher.load_state().get("blocked") is True)
+    finally:
+        watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
+
+
 def test_bot_security():
     print("\n[13] 봇 보안")
     import telegram_bot
@@ -479,6 +523,7 @@ def main():
         test_quiet_hours()
         test_required_headers()
         test_bot_security()
+        test_block_recovery(fake)
     finally:
         fake.restore()
 

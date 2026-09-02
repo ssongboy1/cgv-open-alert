@@ -103,21 +103,29 @@ def save_state(state):
     tmp.replace(STATE_FILE)
 
 
-def warn_once_per_hour():
-    """403 경고를 1시간에 한 번만 보내도록 state 에 시각을 기록한다."""
+def mark_blocked():
+    """403 차단을 state 에 남기고, 경고를 보낼 차례인지 알려준다.
+
+    경고 자체는 1시간에 한 번만 보내지만 차단 사실은 매번 기록한다.
+    다음 실행이 정상으로 돌아오면 이 기록을 보고 복구 알림을 보낸다.
+    차단 알림만 오고 끝나면 감시가 아예 멈춘 건지 알 수 없기 때문이다.
+    """
     now = time.time()
     try:
         state = load_state()
     except Exception:
         return True
-    if now - float(state.get("last_block_warn", 0)) < 3600:
-        return False
-    state["last_block_warn"] = now
+    warn = now - float(state.get("last_block_warn", 0)) >= 3600
+    if warn:
+        state["last_block_warn"] = now
+    if not state.get("blocked"):
+        state["blocked_at"] = datetime.now(KST).isoformat(timespec="seconds")
+    state["blocked"] = True
     try:
         save_state(state)
     except Exception:
         pass
-    return True
+    return warn
 
 
 # ---------------------------------------------------------------- 대상 해석
@@ -320,6 +328,23 @@ def build_movie_message(site_nm, mov_nm, rows, site_no=""):
         "",
         datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST"),
     ])
+
+
+def build_recovered_message(blocked_at):
+    """403 차단에서 풀렸을 때 보내는 알림.
+
+    차단 경고만 보내고 끝나면 감시가 아예 죽은 건지 알 수 없다.
+    다시 정상 조회되는 순간 한 번 알려서 살아 있음을 확인시켜 준다.
+    """
+    lines = ["✅ <b>CGV 접근이 정상으로 돌아왔습니다.</b>", ""]
+    try:
+        when = datetime.fromisoformat(blocked_at).strftime("%H:%M")
+        lines.append("{}에 403으로 막혔지만 지금은 정상 조회됩니다.".format(when))
+    except (TypeError, ValueError):
+        lines.append("403으로 막혔지만 지금은 정상 조회됩니다.")
+    lines += ["감시를 계속합니다.", "",
+              datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- 감시
@@ -557,6 +582,7 @@ def serve_until(cfg, seconds):
 def cycle(cfg, dry_run):
     state = load_state()
     was_first = not state.get("initialized", False)
+    blocked_at = state.get("blocked_at") if state.get("blocked") else None
 
     # 텔레그램으로 들어온 설정 명령을 먼저 처리한다.
     if not dry_run:
@@ -570,6 +596,17 @@ def cycle(cfg, dry_run):
 
     messages, state = run_once(cfg, state, dry_run)
     sent = deliver(messages, state, dry_run)
+
+    # 여기까지 왔으면 조회가 정상이었다는 뜻이다. 직전에 403으로 막혀
+    # 있었다면 풀렸다고 알린다. 전송에 성공했을 때만 기록을 지워서,
+    # 텔레그램이 잠시 죽어 있었으면 다음 실행에서 다시 시도한다.
+    if blocked_at and not dry_run:
+        try:
+            notifier.send(build_recovered_message(blocked_at))
+            state["blocked"] = False
+            log("  복구 알림 전송 완료")
+        except Exception as exc:
+            log("복구 알림 실패(무시): {}".format(exc))
 
     if not dry_run:
         save_state(state)
@@ -604,12 +641,15 @@ def main():
             cycle(cfg, args.dry_run)
         except cgv_api.CloudflareBlocked as exc:
             log("403 차단: {}".format(exc))
-            if warn_once_per_hour():
+            if mark_blocked():
                 try:
                     notifier.send(
                         "⚠️ <b>CGV 접근이 403으로 차단됐습니다.</b>\n\n"
-                        "Cloudflare가 User-Agent를 봇으로 판정했거나 정책이 "
-                        "강화된 것으로 보입니다. 알림이 동작하지 않습니다.\n\n"
+                        "Cloudflare가 이번 요청을 봇으로 판정했습니다. "
+                        "이번 조회만 건너뛰고 <b>다음 실행에서 자동으로 다시 "
+                        "시도</b>합니다. 정상으로 돌아오면 복구 알림을 보냅니다.\n\n"
+                        "복구 알림 없이 이 경고만 계속 반복되면 그때는 "
+                        "cgv_api.UA 를 확인해야 합니다.\n\n"
                         "<code>{}</code>".format(html.escape(str(exc)[:500]))
                     )
                 except Exception as inner:
