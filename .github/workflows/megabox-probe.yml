@@ -1,0 +1,21 @@
+# 메가박스 구현에 필요한 세부값 확인용 임시 워크플로. 확인 후 지운다.
+name: megabox-probe
+
+on:
+  push:
+    branches: [claude/booking-notification-timing-issue-cea2cj]
+    paths:
+      - megabox_probe.py
+      - .github/workflows/megabox-probe.yml
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python megabox_probe.py
