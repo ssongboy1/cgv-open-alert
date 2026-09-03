@@ -1,0 +1,23 @@
+# 메가박스를 읽을 수 있는지 한 번 확인하기 위한 임시 워크플로.
+# 확인이 끝나면 megabox_probe.py 와 함께 지운다.
+# watch 워크플로와 겹치지 않도록 이 브랜치의 프로브 파일이 바뀔 때만 돈다.
+name: megabox-probe
+
+on:
+  push:
+    branches: [claude/booking-notification-timing-issue-cea2cj]
+    paths:
+      - megabox_probe.py
+      - .github/workflows/megabox-probe.yml
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python megabox_probe.py
