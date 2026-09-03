@@ -566,7 +566,8 @@ def test_megabox(fake):
     store = {"dates": [D1], "rows": {D1: [raw]}}
     saved = (megabox_api.get_gate, megabox_api.get_schedules, megabox_api._jitter)
     megabox_api.get_gate = lambda site: {
-        "dates": list(store["dates"]), "movie_cnt": str(len(store["rows"]))}
+        "dates": list(store["dates"]),
+        "shows": str(sum(len(v) for v in store["rows"].values()))}
     megabox_api.get_schedules = lambda site, ymd: [
         megabox_api.to_row(r) for r in store["rows"].get(ymd, [])]
     megabox_api._jitter = lambda: None

@@ -24,6 +24,9 @@ import random
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
+
+KST = timezone(timedelta(hours=9))
 
 URL = "https://www.megabox.co.kr/on/oh/ohb/SimpleBooking/selectBokdList.do"
 BOOK_URL = "https://www.megabox.co.kr/on/oh/ohb/SimpleBooking/simpleBookingPage.do"
@@ -162,34 +165,26 @@ def get_schedules(site_no, scn_ymd):
     return [to_row(r) for r in (data.get("movieFormList") or [])]
 
 
-def get_open_dates(site_no):
-    """예매가 열려 있는 날짜 목록. ['20260903', '20260904', ...]
-
-    아무 날짜로나 한 번 물어보면 응답에 날짜 목록이 딸려 온다.
-    오늘로 물어보는 게 가장 자연스럽다.
-    """
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
-    data = _post(site_no, today)
-    return [d["playDe"] for d in (data.get("movieFormDeList") or [])
-            if d.get("formAt") == "Y" and d.get("playDe")]
-
-
 def get_gate(site_no):
     """지점당 1요청으로 게이트 값을 만든다.
 
-    CGV 는 특별관 편수와 날짜 목록을 얻는 데 2요청이 드는데, 메가박스는
-    한 응답에 둘 다 들어 있어서 1요청이면 된다.
+    CGV 는 특별관 편수와 날짜 목록에 2요청이 드는데, 메가박스는 한 응답에
+    둘 다 들어 있어서 1요청이면 된다.
+
+    오늘이 아니라 '내일'로 물어본다. 응답의 회차 목록은 이미 지나간 회차가
+    빠져서 오기 때문이다(실측: 15:02 조회 -> 15:25 부터, 15:58 조회 ->
+    16:10 부터). 오늘로 물어보면 상영이 끝날 때마다 값이 줄어 게이트가
+    하루 종일 바뀌고, 그때마다 열린 날짜를 전부 다시 훑어 요청만 낭비한다.
+    내일치는 자정 전까지 시간 때문에 줄어들 일이 없다.
+
+    날짜 목록은 어느 날짜로 물어보든 같이 오므로 요청 수는 그대로 1이다.
     """
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
-    data = _post(site_no, today)
+    tomorrow = (datetime.now(KST) + timedelta(days=1)).strftime("%Y%m%d")
+    data = _post(site_no, tomorrow)
     dates = [d["playDe"] for d in (data.get("movieFormDeList") or [])
              if d.get("formAt") == "Y" and d.get("playDe")]
-    # 이미 열린 날짜에 새 영화가 걸리는 것도 잡으려고 편수를 같이 본다.
-    movies = sum(1 for m in (data.get("movieList") or [])
-                 if m.get("formAt") == "Y")
-    return {"dates": dates, "movie_cnt": str(movies)}
+    # 이미 열린 날짜에 회차·영화가 늘어나는 것도 잡으려고 회차 수를 함께 본다.
+    return {"dates": dates, "shows": str(len(data.get("movieFormList") or []))}
 
 
 def get_branches():
@@ -197,8 +192,7 @@ def get_branches():
 
     어느 지점으로 물어보든 전국 목록이 딸려 온다.
     """
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    today = datetime.now(KST).strftime("%Y%m%d")
     data = _post("1351", today)          # 아무 지점이나. 코엑스로 물어본다.
     out = []
     for b in (data.get("areaBrchList") or []):
@@ -222,8 +216,7 @@ def get_screen_kinds(site_no):
     오늘 상영이 없는 특별관은 안 잡히지만, 목록을 얻자고 요청을 여러 번
     보내는 것보다 낫다.
     """
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    today = datetime.now(KST).strftime("%Y%m%d")
     kinds = {}
     for item in (_post(site_no, today).get("movieFormList") or []):
         cd = item.get("theabKindCd")
