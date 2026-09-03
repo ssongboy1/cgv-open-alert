@@ -1,0 +1,25 @@
+# 임시. 메가박스 실제 코드 경로(megabox_api/chains/watcher) 확인용.
+name: megabox-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/booking-notification-timing-issue-cea2cj
+    paths:
+      - megabox_probe.py
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 메가박스 실제 경로 확인
+        run: python megabox_probe.py
