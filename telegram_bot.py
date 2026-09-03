@@ -6,7 +6,7 @@
 명령
 ----
     /list    감시 목록 보기 (삭제 버튼 포함)
-    /add     감시 대상 추가 (지역 -> 지점 -> 상영관 -> 영화)
+    /add     감시 대상 추가 (극장사 -> 지역 -> 지점 -> 상영관 -> 영화)
     /check   지금 조회해서 현황 보기
     /status  실행 상태
     /help    도움말
@@ -22,6 +22,8 @@ from __future__ import annotations
 import difflib
 
 import cgv_api
+import chains
+import megabox_api
 import notifier
 
 MAX_BUTTON_ROWS = 30
@@ -105,35 +107,72 @@ def list_view(cfg, describe):
     return "\n".join(lines), keyboard
 
 
-def region_view():
-    regions = cgv_api.get_regions()
-    buttons = [{"text": r["regnGrpNm"], "callback_data": "r|" + r["regnGrpNm"]}
-               for r in regions]
+def chain_view():
+    return ("어느 <b>극장</b>인가요?", [[
+        {"text": "CGV", "callback_data": "ch|c"},
+        {"text": "메가박스", "callback_data": "ch|m"},
+    ]])
+
+
+def _megabox_regions():
+    """지역 -> [(지점명, 지점번호)]. 지점 목록은 한 요청에 전부 딸려 온다."""
+    areas = {}
+    for b in megabox_api.get_branches():
+        areas.setdefault(b["area"], []).append((b["name"], b["no"]))
+    return areas
+
+
+def region_view(chain="c"):
+    if chain == "m":
+        names = list(_megabox_regions())
+    else:
+        names = [r["regnGrpNm"] for r in cgv_api.get_regions()]
+    buttons = [{"text": nm, "callback_data": "r|{}|{}".format(chain, nm)}
+               for nm in names]
     return "감시할 <b>지역</b>을 고르세요.", _rows(buttons, 3)
 
 
-def site_view(region_nm):
-    regions = cgv_api.get_regions()
-    region = next((r for r in regions if r["regnGrpNm"] == region_nm), None)
-    sites = (region or {}).get("siteList", [])[:MAX_BUTTON_ROWS * 2]
-    buttons = [{"text": s["siteNm"], "callback_data": "s|{}|{}".format(
-        s["siteNo"], s["siteNm"][:20])} for s in sites]
+def site_view(chain, region_nm):
+    """지점 버튼. 콜백에 담는 지점 값은 메가박스면 MB 접두어가 붙는다."""
+    if chain == "m":
+        sites = [(nm, chains.MEGABOX_PREFIX + no)
+                 for nm, no in _megabox_regions().get(region_nm, [])]
+    else:
+        regions = cgv_api.get_regions()
+        region = next((r for r in regions if r["regnGrpNm"] == region_nm), None)
+        sites = [(s["siteNm"], s["siteNo"])
+                 for s in (region or {}).get("siteList", [])]
+    sites = sites[:MAX_BUTTON_ROWS * 2]
+    buttons = [{"text": nm, "callback_data": "s|{}|{}".format(no, nm[:20])}
+               for nm, no in sites]
     return ("<b>{}</b> 의 지점을 고르세요.".format(region_nm), _rows(buttons, 2))
 
 
 def screen_view(site_nm, site_no):
-    try:
-        has_imax, cnt = cgv_api.has_imax(site_no)
-    except Exception:
-        has_imax, cnt = False, "?"
-    note = ("아이맥스 있음 (현재 {}편 상영 중)".format(cnt) if has_imax
-            else "이 지점에는 아이맥스가 없습니다")
-    buttons = [
-        {"text": "아이맥스", "callback_data": "sc|아이맥스"},
-        {"text": "4DX", "callback_data": "sc|4DX"},
-        {"text": "SCREENX", "callback_data": "sc|SCREENX"},
-        {"text": "전 상영관", "callback_data": "sc|ALL"},
-    ]
+    """그 지점에 실제로 있는 상영관만 보여준다."""
+    if chains.is_megabox(site_no):
+        try:
+            kinds = megabox_api.get_screen_kinds(chains.code(site_no))
+        except Exception:
+            kinds = []
+        special = [(cd, nm) for cd, nm in kinds if cd != "NOR"]
+        note = ("특별관: " + ", ".join(nm for _, nm in special) if special
+                else "오늘 걸려 있는 특별관이 없습니다")
+        buttons = [{"text": nm, "callback_data": "sc|" + nm}
+                   for _, nm in special[:6]]
+    else:
+        try:
+            has_imax, cnt = cgv_api.has_imax(site_no)
+        except Exception:
+            has_imax, cnt = False, "?"
+        note = ("아이맥스 있음 (현재 {}편 상영 중)".format(cnt) if has_imax
+                else "이 지점에는 아이맥스가 없습니다")
+        buttons = [
+            {"text": "아이맥스", "callback_data": "sc|아이맥스"},
+            {"text": "4DX", "callback_data": "sc|4DX"},
+            {"text": "SCREENX", "callback_data": "sc|SCREENX"},
+        ]
+    buttons.append({"text": "전 상영관", "callback_data": "sc|ALL"})
     return ("<b>{}</b> — {}\n\n<b>상영관</b>을 고르세요.".format(site_nm, note),
             _rows(buttons, 2))
 
@@ -298,9 +337,16 @@ def _one(upd, cfg, state, draft, describe, check_fn, my_chat):
         data = cb.get("data", "")
         ack(cb["id"])
 
-        if data.startswith("r|"):
-            text, kb = site_view(data[2:])
-            draft = {"region": data[2:]}
+        if data.startswith("ch|"):
+            chain = data[3:]
+            text, kb = region_view(chain)
+            draft = {"chain": chain}
+            edit(chat_id, msg_id, text, kb)
+
+        elif data.startswith("r|"):
+            chain, region = data[2:].split("|", 1)
+            text, kb = site_view(chain, region)
+            draft = {"chain": chain, "region": region}
             edit(chat_id, msg_id, text, kb)
 
         elif data.startswith("s|"):
@@ -398,7 +444,7 @@ def _one(upd, cfg, state, draft, describe, check_fn, my_chat):
         body, kb = list_view(cfg, describe)
         send(body, kb)
     elif cmd == "/add":
-        body, kb = region_view()
+        body, kb = chain_view()
         send(body, kb)
         draft = {}
     elif cmd == "/check":
@@ -416,7 +462,9 @@ def _finish(draft, keyword):
     return {
         "site_no": draft["site_no"],
         "site_nm": draft["site_nm"],
-        "screen": draft.get("screen", "아이맥스"),
+        # 메가박스는 아이맥스가 없으므로 기본값을 다르게 잡는다.
+        "screen": draft.get("screen") or (
+            "ALL" if chains.is_megabox(draft["site_no"]) else "아이맥스"),
         "movie_keyword": keyword,
         "notify": "schedule" if keyword else "movie",
     }

@@ -213,3 +213,20 @@ def get_branches():
 def booking_url(site_no):
     """지점 예매 화면. 지점이 미리 선택되는지는 확인하지 못했다."""
     return "{}?brchNo1={}".format(BOOK_URL, site_no)
+
+
+def get_screen_kinds(site_no):
+    """그 지점에 오늘 걸려 있는 상영관 종류. [('DBC', '돌비시네마'), ...]
+
+    /add 에서 그 지점에 실제로 있는 상영관만 보여주는 데 쓴다.
+    오늘 상영이 없는 특별관은 안 잡히지만, 목록을 얻자고 요청을 여러 번
+    보내는 것보다 낫다.
+    """
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    kinds = {}
+    for item in (_post(site_no, today).get("movieFormList") or []):
+        cd = item.get("theabKindCd")
+        if cd:
+            kinds[cd] = SCREEN_KINDS.get(cd, cd)
+    return sorted(kinds.items())
