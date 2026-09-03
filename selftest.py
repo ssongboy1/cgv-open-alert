@@ -596,6 +596,55 @@ def test_megabox(fake):
     check("CGV 메시지 표기는 그대로  <- 'CGV 대구'", "CGV 대구" in cgv_body, cgv_body)
 
 
+def test_add_flow():
+    print("\n[17] /add 에서 극장사 고르기")
+    import telegram_bot as tb
+
+    _, kb = tb.chain_view()
+    labels = [b["text"] for row_ in kb for b in row_]
+    check("극장사를 먼저 고른다", labels == ["CGV", "메가박스"], labels)
+
+    saved = (megabox_api.get_branches, megabox_api.get_screen_kinds)
+    megabox_api.get_branches = lambda: [
+        {"area": "서울", "name": "코엑스", "no": "1351"},
+        {"area": "서울", "name": "강남", "no": "1372"},
+        {"area": "경기", "name": "고양스타필드", "no": "0010"},
+    ]
+    megabox_api.get_screen_kinds = lambda site: [("DBC", "돌비시네마"),
+                                                 ("NOR", "일반")]
+    try:
+        _, kb = tb.region_view("m")
+        regions = [b["text"] for row_ in kb for b in row_]
+        check("메가박스 지역 목록을 가져온다", regions == ["서울", "경기"], regions)
+
+        _, kb = tb.site_view("m", "서울")
+        datas = [b["callback_data"] for row_ in kb for b in row_]
+        check("지점 값에 MB 접두어가 붙는다  <- CGV 지점과 안 섞인다",
+              datas == ["s|MB1351|코엑스", "s|MB1372|강남"], datas)
+
+        _, kb = tb.screen_view("코엑스", "MB1351")
+        opts = [b["text"] for row_ in kb for b in row_]
+        check("그 지점에 있는 특별관만 보여준다",
+              opts == ["돌비시네마", "전 상영관"], opts)
+        check("일반관은 특별관 목록에서 뺀다", "일반" not in opts, opts)
+
+        target = tb._finish({"site_no": "MB1351", "site_nm": "코엑스",
+                             "screen": "돌비시네마"}, "오디세이")
+        check("등록된 대상이 메가박스로 잡힌다",
+              chains.is_megabox(target["site_no"]), target)
+        check("설명 문구가 제대로 나온다",
+              watcher.describe(target) == "코엑스/돌비시네마/오디세이 (새 회차)",
+              watcher.describe(target))
+        check("상영관을 안 고르면 메가박스는 전 상영관이 기본",
+              tb._finish({"site_no": "MB1351", "site_nm": "코엑스"},
+                         "")["screen"] == "ALL")
+        check("CGV 는 기본값이 그대로 아이맥스",
+              tb._finish({"site_no": "0345", "site_nm": "대구"},
+                         "")["screen"] == "아이맥스")
+    finally:
+        (megabox_api.get_branches, megabox_api.get_screen_kinds) = saved
+
+
 def test_bot_security():
     print("\n[13] 봇 보안")
     import telegram_bot
@@ -656,6 +705,7 @@ def main():
         test_bot_security()
         test_block_recovery(fake)
         test_megabox(fake)
+        test_add_flow()
     finally:
         fake.restore()
 
