@@ -47,11 +47,16 @@ def gate(site):
     """
     if is_megabox(site):
         return megabox_api.get_gate(code(site))
-    screens = cgv_api.get_special_screens(site)
-    imax = next((s for s in screens
-                 if s.get("comCdvalNm") == cgv_api.IMAX_GRADE), None)
+    # 특별관 현황 요청 하나에 아이맥스·4DX·SCREENX 편수가 전부 담겨 온다.
+    # 예전에는 아이맥스만 꺼내 쓰고 나머지를 버렸다. 그러면 이미 열린
+    # 날짜에 4DX 로 새 영화가 끼어드는 것을 게이트가 못 잡아서, 정기 전체
+    # 스캔(기본 30회마다) 때까지 알림이 늦었다. 버리지 말고 전부 본다.
+    # 요청 수는 그대로다. (일반관은 이 목록에 없어서 여전히 전체 스캔 몫)
+    screens = {s["comCdvalNm"]: str(s.get("schdCnt", "0"))
+               for s in cgv_api.get_special_screens(site)
+               if s.get("comCdvalNm")}
     return {
-        "imax_cnt": (imax or {}).get("schdCnt", "0"),
+        "screens": screens,
         "dates": cgv_api.get_open_dates(site),
     }
 

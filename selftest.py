@@ -81,10 +81,17 @@ class FakeCgv:
          cgv_api.get_schedules, cgv_api._jitter) = self._orig
 
     def _screens(self, site):
+        """실제 CGV 는 특별관만 돌려준다. 일반관은 이 목록에 없다."""
         self.gate_calls += 1
-        movies = {r["movNm"] for d in self.data.get(site, {}).values() for r in d
-                  if r["tcscnsGradNm"] == "아이맥스"}
-        return [{"comCdvalNm": "아이맥스", "schdCnt": str(len(movies))}]
+        counts = {}
+        for day in self.data.get(site, {}).values():
+            for r in day:
+                grade = r["tcscnsGradNm"]
+                if grade == "일반":
+                    continue
+                counts.setdefault(grade, set()).add(r["movNm"])
+        return [{"comCdvalNm": g, "schdCnt": str(len(m))}
+                for g, m in sorted(counts.items())]
 
     def _dates(self, site):
         return sorted(self.data.get(site, {}))
@@ -645,6 +652,39 @@ def test_add_flow():
         (megabox_api.get_branches, megabox_api.get_screen_kinds) = saved
 
 
+def test_gate_width(fake):
+    print("\n[18] 게이트가 보는 범위")
+    fake.reset()
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800"),
+        row("0345", "M2", "스파이더맨", D1, "1000", grade="4DX", fmt="4DX 2D"),
+    ])
+    g = chains.gate("0345")
+    check("게이트에 특별관 편수가 전부 들어간다  <- 예전엔 아이맥스만 봤다",
+          set(g["screens"]) == {"아이맥스", "4DX"}, g)
+
+    cfg = config(target(screen="ALL", kw=""))
+    _, st = run(cfg, fresh_state())
+
+    # 이미 열린 날짜에 + 아이맥스가 아닌 관에 + 새 영화가 끼어드는 경우.
+    # 날짜 목록도 그대로, 아이맥스 편수도 그대로다.
+    fake.set("0345", D1, fake.data["0345"][D1] + [
+        row("0345", "M8", "신작", D1, "2000", grade="4DX", fmt="4DX 2D")])
+    msgs, st = run(cfg, st)
+    check("4DX 에 새 영화가 걸리면 게이트가 바로 잡는다  <- 전에는 전체 스캔까지 늦었다",
+          len(msgs) == 1, msgs)
+
+    # 일반관은 특별관 목록에 없어서 여전히 전체 스캔이 필요하다 (설계상)
+    fake.set("0345", D1, fake.data["0345"][D1] + [
+        row("0345", "M9", "일반신작", D1, "2200", grade="일반", fmt="2D")])
+    msgs, st = run(cfg, st)
+    check("일반관 새 영화는 게이트로는 못 잡는다 (설계상)", len(msgs) == 0, msgs)
+
+    st["run_no"] = cfg["full_scan_every_runs"]
+    msgs, st = run(cfg, st)
+    check("일반관도 정기 전체 스캔에서는 잡힌다  <- 안전망", len(msgs) == 1, msgs)
+
+
 def test_bot_security():
     print("\n[13] 봇 보안")
     import telegram_bot
@@ -706,6 +746,7 @@ def main():
         test_block_recovery(fake)
         test_megabox(fake)
         test_add_flow()
+        test_gate_width(fake)
     finally:
         fake.restore()
 
