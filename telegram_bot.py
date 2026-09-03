@@ -81,7 +81,7 @@ def _rows(buttons, per_row):
 
 def help_text():
     return "\n".join([
-        "<b>CGV 예매 오픈 알리미</b>",
+        "<b>CGV·메가박스 예매 오픈 알리미</b>",
         "",
         "/list — 감시 목록 보기 · 삭제",
         "/add — 감시 대상 추가",
