@@ -326,6 +326,28 @@ def test_merge():
     check("tg_offset 은 큰 쪽  <- 작으면 명령 재처리", m["tg_offset"] == 500)
     check("게이트는 양쪽 지점 모두 유지", set(m["gates"]) == {"0345", "0089"})
 
+    # 합집합만 하면 '지우는 일'이 영원히 안 일어난다. 실제로 터졌던 버그 둘.
+    live, dead = watcher.target_id(target()), "0345|ALL|스파이더맨|schedule"
+    m = merge_state.merge({"baselined": [live]}, {"baselined": [dead]},
+                          target_ids={live})
+    check("삭제한 대상의 기준선은 병합에서도 지운다  <- 남으면 재등록 때 몽땅 알림",
+          m["baselined"] == [live], m["baselined"])
+    m = merge_state.merge({"baselined": [live]}, {"baselined": [dead]})
+    check("config 를 못 읽으면 기준선을 거르지 않는다  <- 잘못 지우는 쪽이 더 나쁘다",
+          m["baselined"] == sorted([live, dead]), m["baselined"])
+
+    old_key = "0345|M1|{}|0800|018".format(ymd(-3))
+    new_key = "0345|M1|{}|0800|018".format(D1)
+    m = merge_state.merge({"seen": [new_key]}, {"seen": [old_key, new_key]})
+    check("오래된 회차 키는 병합에서도 버린다  <- 되살아나면 state 가 계속 큰다",
+          m["seen"] == [new_key], m["seen"])
+
+    check("config 에서 감시 대상 id 를 읽어낸다",
+          merge_state.valid_target_ids("config.json")
+          == {watcher.target_id(t) for t in watcher.load_config()["targets"]})
+    check("config 가 없으면 None  <- 거르지 않는다는 신호",
+          merge_state.valid_target_ids("없는파일.json") is None)
+
 
 def test_target_lifecycle(fake):
     print("\n[9] 대상 삭제 후 재등록")

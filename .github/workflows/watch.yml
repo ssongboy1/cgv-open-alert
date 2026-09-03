@@ -81,10 +81,13 @@ jobs:
               continue
             fi
 
-            python merge_state.py /tmp/ours-state.json state.json
+            # config 를 먼저 제자리에 돌려놓는다. merge_state 가 이 파일을
+            # 읽어서 삭제된 감시 대상의 기준선 기록을 걸러내기 때문에,
+            # 순서가 바뀌면 방금 추가한 대상의 기준선이 지워질 수 있다.
             if [ -n "$CONFIG_CHANGED" ]; then
               cp /tmp/ours-config.json config.json
             fi
+            python merge_state.py /tmp/ours-state.json state.json
 
             if git diff --quiet -- state.json config.json; then
               echo "병합 결과가 원격과 같음. 커밋 불필요"
