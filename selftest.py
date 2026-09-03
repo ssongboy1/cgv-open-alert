@@ -15,6 +15,8 @@ import sys
 from datetime import datetime, timedelta
 
 import cgv_api
+import chains
+import megabox_api
 import merge_state
 import watcher
 
@@ -509,6 +511,91 @@ def test_block_recovery(fake):
         watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
 
 
+def test_megabox(fake):
+    print("\n[16] 메가박스")
+    fake.reset()
+
+    # 2026-09-03 코엑스 실제 응답에서 그대로 가져온 항목
+    raw = {
+        "areaCd": "10", "areaCdNm": "서울", "brchNo": "1351", "brchNm": "코엑스",
+        "playSchdlNo": "2609031351037", "theabNo": "01",
+        "theabExpoNm": "르 리클라이너 5관&#40;마이어사운드&#41;",
+        "theabSeatCnt": 378, "playStartTime": "15:50", "playEndTime": "18:52",
+        "movieNm": "오디세이", "movieNo": "26018900",
+        "restSeatCnt": 216, "totSeatCnt": 378,
+        "theabKindCd": "DBC", "playDe": D1, "bokdAbleAt": "Y",
+    }
+    row = megabox_api.to_row(raw)
+    check("영화·날짜를 옮긴다", row["movNm"] == "오디세이" and row["scnYmd"] == D1, row)
+    check("시작시간의 콜론을 뗀다 (15:50 -> 1550)  <- fmt_time 이 그대로 동작",
+          row["scnsrtTm"] == "1550", row)
+    check("좌석을 잔여/총 으로 옮긴다", (row["frSeatCnt"], row["stcnt"]) == (216, 378), row)
+    check("상영관 코드를 이름으로 (DBC -> 돌비시네마)",
+          row["tcscnsGradNm"] == "돌비시네마", row)
+    check("상영관 표기의 HTML 이스케이프를 푼다  <- &#40; 가 그대로 나가면 안 된다",
+          row["movkndDsplNm"] == "르 리클라이너 5관(마이어사운드)", row)
+    check("CGV 회차와 같은 필드 이름을 쓴다  <- watcher 를 안 고쳐도 되는 이유",
+          set(row) == {"movNo", "movNm", "scnYmd", "scnsrtTm", "scnsNo",
+                       "tcscnsGradNm", "movkndDsplNm", "frSeatCnt", "stcnt"},
+          sorted(row))
+
+    check("MB 접두어로 극장사를 가른다",
+          chains.is_megabox("MB1351") and not chains.is_megabox("0345"))
+    check("CGV 지점 값은 손대지 않는다  <- 쌓아둔 회차 기록이 그대로 유효",
+          chains.code("0345") == "0345")
+    check("메가박스는 접두어를 떼고 조회한다", chains.code("MB1351") == "1351")
+    check("메시지에 붙는 극장사 이름",
+          (chains.label("0345"), chains.label("MB1351")) == ("CGV", "메가박스"))
+
+    cgv_key = watcher.schedule_key("1351", {
+        "movNo": "26018900", "scnYmd": D1, "scnsrtTm": "1550", "scnsNo": "01"})
+    mb_key = watcher.schedule_key("MB1351", row)
+    check("지점번호가 같아도 극장사가 다르면 키가 다르다  <- 서로 덮어쓰지 않는다",
+          cgv_key != mb_key, (cgv_key, mb_key))
+    check("메가박스 키도 prune_seen 이 그대로 처리한다  <- 자정 수정이 안 깨진다",
+          mb_key in watcher.prune_seen({mb_key}))
+
+    # 실제 감지 흐름
+    store = {"dates": [D1], "rows": {D1: [raw]}}
+    saved = (megabox_api.get_gate, megabox_api.get_schedules, megabox_api._jitter)
+    megabox_api.get_gate = lambda site: {
+        "dates": list(store["dates"]), "movie_cnt": str(len(store["rows"]))}
+    megabox_api.get_schedules = lambda site, ymd: [
+        megabox_api.to_row(r) for r in store["rows"].get(ymd, [])]
+    megabox_api._jitter = lambda: None
+    try:
+        cfg = config({"site_no": "MB1351", "site_nm": "코엑스", "screen": "돌비",
+                      "movie_keyword": "오디세이", "notify": "schedule"})
+        msgs, st = run(cfg, fresh_state())
+        check("첫 실행은 기준선만 잡는다", len(msgs) == 0, msgs)
+
+        store["dates"].append(D2)
+        store["rows"][D2] = [dict(raw, playDe=D2, playStartTime="21:10", theabNo="02")]
+        msgs, st = run(cfg, st)
+        check("새 날짜가 열리면 알린다", len(msgs) == 1, msgs)
+
+        body = msgs[0][0] if msgs else ""
+        check("메시지에 메가박스라고 나온다", "메가박스 코엑스" in body, body)
+        check("좌석을 표시한다", "216/378석" in body, body)
+        check("상영관 표기가 들어간다", "르 리클라이너" in body, body)
+        check("버튼이 메가박스 예매 페이지로 간다",
+              "megabox.co.kr" in watcher.booking_button("MB1351", "코엑스")[0][0]["url"])
+
+        msgs, st = run(cfg, st)
+        check("같은 회차를 다시 알리지 않는다", len(msgs) == 0, msgs)
+    finally:
+        (megabox_api.get_gate, megabox_api.get_schedules,
+         megabox_api._jitter) = saved
+
+    # CGV 쪽 표기가 그대로인지 (극장사 이름을 붙이면서 바뀌면 안 된다)
+    cgv_body = watcher.build_schedule_message(
+        "대구", "오디세이",
+        [row_ for row_ in [{"scnYmd": D1, "scnsrtTm": "0800", "frSeatCnt": "10",
+                            "stcnt": "241", "movkndDsplNm": "IMAX LASER 2D"}]],
+        site_no="0345")
+    check("CGV 메시지 표기는 그대로  <- 'CGV 대구'", "CGV 대구" in cgv_body, cgv_body)
+
+
 def test_bot_security():
     print("\n[13] 봇 보안")
     import telegram_bot
@@ -568,6 +655,7 @@ def main():
         test_required_headers()
         test_bot_security()
         test_block_recovery(fake)
+        test_megabox(fake)
     finally:
         fake.restore()
 
