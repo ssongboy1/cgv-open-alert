@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CGV 예매 오픈 감시.
+"""CGV·메가박스 예매 오픈 감시.
 
     python watcher.py              1회 실행 후 종료 (GitHub Actions용)
     python watcher.py --loop 30    30초 주기 상시 실행 (로컬 스퍼트용)
@@ -7,23 +7,30 @@
 
 감시 대상 (config.json 의 targets)
 ----------------------------------
-    site_no        지점 코드            "0345"
+    site_no        지점 코드            "0345"   CGV 대구
+                                        "MB1351" 메가박스 코엑스 (MB 접두어)
     site_nm        지점 이름            "대구"
-    screen         상영관 필터          "아이맥스" | "4DX" | "SCREENX" | "ALL"
+    screen         상영관 필터          CGV      "아이맥스" | "4DX" | "SCREENX"
+                                        메가박스  "돌비시네마" | "MX4D" | "리클라이너" ...
+                                        "ALL" 이면 전 상영관
     movie_keyword  영화 제목 부분일치    "오디세이"  (빈 문자열이면 전체)
     notify         알림 단위            "schedule" = 새 회차마다
                                         "movie"    = 새 영화가 걸릴 때 한 번만
 
 감지 방식
 ---------
-지점당 매 실행 2요청("게이트")만 보내고, 게이트 값이 바뀌었을 때에만
+지점당 매 실행 최소 요청("게이트")만 보내고, 게이트 값이 바뀌었을 때에만
 날짜별 시간표를 상세 조회한다. 게이트는
 
-    (1) searchSscnsSchdExistList 의 아이맥스 상영 편수
-    (2) searchSiteScnscYmdListBySite 의 예매 가능 날짜 목록
+    CGV      (1) 아이맥스 상영 편수  (2) 예매 가능 날짜 목록   = 2요청
+    메가박스  (1) 예매 가능 날짜 목록 (2) 상영 편수            = 1요청
+             (한 응답에 둘 다 들어 있다)
 
-두 가지다. 이미 열린 날짜 안에서 회차/영화만 늘어나는 경우는 게이트로
-잡히지 않으므로 full_scan_every_runs 회마다 강제로 전체 스캔한다.
+이미 열린 날짜 안에서 회차/영화만 늘어나는 경우는 게이트로 잡히지 않으므로
+full_scan_every_runs 회마다 강제로 전체 스캔한다.
+
+극장사별 차이는 chains.py 가 전부 흡수한다. 회차 dict 는 두 극장사 모두
+CGV 필드 이름을 쓰므로 이 파일은 극장사를 거의 의식하지 않는다.
 """
 
 from __future__ import annotations
@@ -41,6 +48,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cgv_api
+import chains
+import megabox_api
 import notifier
 import telegram_bot
 
@@ -54,14 +63,8 @@ APP_OPEN_URL = "https://ssongboy1.github.io/cgv-open-alert/open.html"
 
 SCREEN_ALL = "ALL"
 
-# 사용자가 어떻게 적든 CGV의 tcscnsGradNm 값으로 맞춘다.
-SCREEN_ALIASES = {
-    "IMAX": "아이맥스", "imax": "아이맥스", "Imax": "아이맥스", "아이맥스": "아이맥스",
-    "4DX": "4DX", "4dx": "4DX",
-    "SCREENX": "SCREENX", "screenx": "SCREENX", "ScreenX": "SCREENX",
-    "일반": "일반", "일반관": "일반",
-    "ALL": SCREEN_ALL, "all": SCREEN_ALL, "전체": SCREEN_ALL, "전 상영관": SCREEN_ALL,
-}
+# 사용자가 어떻게 적든 각 극장사의 상영관 표기로 맞춘다. chains 가 갖는다.
+SCREEN_ALIASES = dict(chains.SCREEN_ALIASES)
 
 DEFAULT_CONFIG = {
     "targets": [],
@@ -215,8 +218,7 @@ def screen_label(row):
 
 def booking_url(site_no, site_nm):
     """해당 지점 예매 화면 웹링크. 메시지 본문과 PC 용."""
-    return "{}/cinema?siteNo={}&siteNm={}".format(
-        BOOK_URL, site_no, urllib.parse.quote(site_nm))
+    return chains.booking_url(site_no, site_nm)
 
 
 def app_open_url(site_no, site_nm):
@@ -232,8 +234,12 @@ def app_open_url(site_no, site_nm):
 
 
 def booking_button(site_no, site_nm):
-    # 앱이 없거나 실패하면 중계 페이지가 알아서 웹 예매로 떨어뜨리므로
+    # CGV 는 앱이 없거나 실패하면 중계 페이지가 알아서 웹 예매로 떨어뜨리므로
     # 버튼은 하나면 충분하다. 본문에도 웹 주소가 그대로 들어간다.
+    # 메가박스는 앱 중계 페이지가 없어서 예매 페이지로 바로 보낸다.
+    if chains.is_megabox(site_no):
+        return [[{"text": "🎟 메가박스 예매 페이지",
+                  "url": chains.booking_url(site_no, site_nm)}]]
     return [[{"text": "📱 CGV 앱으로 열기",
               "url": app_open_url(site_no, site_nm)}]]
 
@@ -292,7 +298,7 @@ def build_schedule_message(site_nm, mov_nm, rows, site_no=""):
     lines = [
         "\U0001F3AC <b>CGV 예매 오픈!</b>",
         "",
-        "\U0001F4CD CGV {}".format(esc(site_nm)),
+        "\U0001F4CD {} {}".format(chains.label(site_no), esc(site_nm)),
         "\U0001F39E {}".format(esc(mov_nm)),
         "",
     ]
@@ -316,7 +322,8 @@ def build_movie_message(site_nm, mov_nm, rows, site_no=""):
     if len(dates) > 1:
         period += " ~ " + fmt_date(dates[-1])
     return "\n".join([
-        "\U0001F195 <b>CGV {}에 새 영화가 열렸습니다</b>".format(esc(site_nm)),
+        "\U0001F195 <b>{} {}에 새 영화가 열렸습니다</b>".format(
+            chains.label(site_no), esc(site_nm)),
         "",
         "\U0001F39E <b>{}</b>".format(esc(mov_nm)),
         "",
@@ -350,21 +357,16 @@ def build_recovered_message(blocked_at):
 # ---------------------------------------------------------------- 감시
 
 def gate_snapshot(site_no):
-    """지점당 2요청. 상세 스캔이 필요한지 판단하는 값."""
-    screens = cgv_api.get_special_screens(site_no)
-    imax = next((s for s in screens if s.get("comCdvalNm") == cgv_api.IMAX_GRADE), None)
-    return {
-        "imax_cnt": (imax or {}).get("schdCnt", "0"),
-        "dates": cgv_api.get_open_dates(site_no),
-    }
+    """상세 스캔이 필요한지 판단하는 값. 극장사별 차이는 chains 가 흡수한다."""
+    return chains.gate(site_no)
 
 
 def scan_site(site_no, dates):
     """지점의 모든 열린 날짜에서 전체 시간표를 모은다 (상영관 필터 없음)."""
     rows = []
     for ymd in dates:
-        rows.extend(cgv_api.get_schedules(site_no, ymd))
-        cgv_api._jitter()
+        rows.extend(chains.schedules(site_no, ymd))
+        chains.jitter(site_no)
     return rows
 
 
@@ -532,7 +534,7 @@ def check_summary():
     for target in cfg["targets"]:
         site_no = target["site_no"]
         try:
-            dates = cgv_api.get_open_dates(site_no)
+            dates = gate_snapshot(site_no)["dates"]
             rows = select_rows(scan_site(site_no, dates),
                                screen_of(target), target.get("movie_keyword", ""))
         except Exception as exc:
@@ -639,7 +641,7 @@ def main():
     while True:
         try:
             cycle(cfg, args.dry_run)
-        except cgv_api.CloudflareBlocked as exc:
+        except chains.BLOCKED_ERRORS as exc:
             log("403 차단: {}".format(exc))
             if mark_blocked():
                 try:
