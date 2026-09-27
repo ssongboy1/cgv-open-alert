@@ -473,6 +473,22 @@ def test_required_headers():
     check("Referer 를 보낸다  <- searchMovScnInfo 가 없으면 403",
           "cgv.co.kr" in sent.get("referer", ""), sent.get("referer"))
 
+    # 2026-09 부터 Cloudflare 가 추가로 요구한다. 둘 중 한 묶음만 있어도
+    # 통과하지만, 한쪽 규칙이 또 바뀔 때를 대비해 둘 다 보내야 한다.
+    ch = [k for k in sent if k.startswith("sec-ch-ua")]
+    fetch = [k for k in sent if k.startswith("sec-fetch-")]
+    check("sec-ch-ua 3종을 보낸다  <- 없으면 전 엔드포인트 403",
+          len(ch) >= 3, sorted(ch))
+    check("Sec-Fetch 3종을 보낸다  <- 없으면 전 엔드포인트 403",
+          len(fetch) >= 3, sorted(fetch))
+    check("sec-ch-ua 의 크롬 버전이 UA 와 같다",
+          cgv_api.CHROME_VER in sent.get("sec-ch-ua", "")
+          and cgv_api.CHROME_VER in sent.get("user-agent", ""),
+          "UA={} / sec-ch-ua={}".format(
+              sent.get("user-agent", "")[-30:], sent.get("sec-ch-ua")))
+    check("Accept-Encoding 은 보내지 않는다  <- br/zstd 를 못 푼다",
+          "accept-encoding" not in sent, sent.get("accept-encoding"))
+
 
 def test_block_recovery(fake):
     print("\n[15] 403 차단과 복구 알림")

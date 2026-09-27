@@ -6,28 +6,44 @@ BFF(https://cgv.co.kr/api/v1/*)를 경유한다. 이 BFF는 토큰/쿠키가 필
 coCd=A420 만 있으면 누구나 GET 으로 조회할 수 있다.
 
 --------------------------------------------------------------------------
-중요: cgv.co.kr 앞단 Cloudflare 를 통과하려면 두 가지가 필요하다.
+중요: cgv.co.kr 앞단 Cloudflare 를 통과하려면 세 가지가 필요하다.
 
 1) User-Agent 를 브라우저 문자열로 (전 엔드포인트 공통)
 
     curl/8.4.0              -> 403
     python-requests/2.32.0  -> 403
     Mozilla/5.0 ... Chrome  -> 200
-    Mozilla/5.0 ... (구형)   -> 200
 
 2) Referer 를 cgv.co.kr 페이지로 (searchMovScnInfo 에 필수)
 
-   실측: 같은 UA 로 호출해도
-       searchSscnsSchdExistList      UA만 200
-       searchSiteScnscYmdListBySite  UA만 200
-       searchRegnList                UA만 200
-       searchMovScnInfo              UA만 403 / UA+Referer 200
+3) 요즘 브라우저만 보내는 헤더 묶음 (2026-09 부터 필수가 됐다)
 
-   가장 무거운 시간표 엔드포인트만 Referer 를 요구한다. 하필 우리가
-   제일 많이 쓰는 엔드포인트다. Accept, Accept-Language 는 영향 없다.
+   sec-ch-ua 3종 또는 Sec-Fetch 3종. 둘 중 한 묶음만 있어도 통과한다.
 
-아래 헤더 중 User-Agent 나 Referer 를 빼면 감시가 통째로 멈춘다.
-selftest.py 가 이 둘을 회귀 테스트로 잡고 있다.
+   2026-09-27 실측. 같은 IP, 같은 UA, 같은 Referer 로 searchRegnList:
+       (아무것도 없음)            403      <- 2026-08 까지는 200 이었다
+       + Accept 를 바꿈           403
+       + Accept-Language 를 바꿈  403
+       + Origin                  403
+       + Connection              403
+       + Accept-Encoding         403
+       + sec-ch-ua 3종           200      <- 열쇠
+       + Sec-Fetch 3종           200      <- 열쇠
+
+   같은 실행에서 전후로 대조군을 두 번 넣어 차단이 살아 있음을 확인했다.
+   엔드포인트를 가리지 않는다. 전에는 searchMovScnInfo 만 Referer 를
+   요구하고 나머지는 UA 만으로 200 이었는데, 이제는 넷 다 막힌다.
+
+   두 묶음을 다 보낸다. 실제 크롬도 둘 다 보내고, 한쪽 규칙이 바뀌어도
+   다른 쪽으로 버틴다. sec-ch-ua 의 버전은 UA 의 크롬 버전과 맞춰 둔다.
+   어긋나 있으면 그 자체가 봇 신호가 된다.
+
+Accept-Encoding 은 일부러 안 보낸다. 요즘 크롬은 br / zstd 를 같이
+요구하는데 표준 라이브러리로는 못 푼다. 안 보내면 서버가 압축 없이
+주고, 그래도 통과한다(위 실측에서 enc=없음으로 200).
+
+아래 헤더 중 하나라도 빼면 감시가 통째로 멈춘다.
+selftest.py 가 회귀 테스트로 잡고 있다.
 --------------------------------------------------------------------------
 
 표준 라이브러리만 사용한다 (pip install 불필요).
@@ -49,10 +65,22 @@ RTCTL_SCOP_CD = "01"     # 발매통제범위코드
 IMAX_GRADE = "아이맥스"    # searchMovScnInfo 의 tcscnsGradNm 값
 
 # Cloudflare 통과용. 위 주석 참고.
+CHROME_VER = "140"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36".format(CHROME_VER)
 )
+
+# 요즘 브라우저만 보내는 묶음. 둘 중 하나만 있어도 통과하지만 둘 다 보낸다.
+BROWSER_HINTS = {
+    "sec-ch-ua": '"Chromium";v="{v}", "Not=A?Brand";v="24", '
+                 '"Google Chrome";v="{v}"'.format(v=CHROME_VER),
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
 
 TIMEOUT = 10
 RETRIES = 3
@@ -69,15 +97,15 @@ class CloudflareBlocked(CgvError):
 def _get(path, **params):
     params.setdefault("coCd", CO_CD)
     url = BASE + "/" + path + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json",
-            "Accept-Language": "ko-KR,ko;q=0.9",
-            "Referer": "https://cgv.co.kr/cnm/movieBook",
-        },
-    )
+    headers = {
+        "User-Agent": UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Referer": "https://cgv.co.kr/cnm/movieBook",
+        "Origin": "https://cgv.co.kr",
+    }
+    headers.update(BROWSER_HINTS)
+    req = urllib.request.Request(url, headers=headers)
 
     last = None
     for attempt in range(RETRIES):
@@ -91,8 +119,9 @@ def _get(path, **params):
             if exc.code == 403:
                 raise CloudflareBlocked(
                     "403 Forbidden: " + url + "\n"
-                    "Cloudflare가 User-Agent를 봇으로 판정했습니다. "
-                    "cgv_api.UA 를 확인하세요."
+                    "Cloudflare가 이 요청을 봇으로 판정했습니다. "
+                    "cgv_api 의 UA / Referer / BROWSER_HINTS 를 확인하세요. "
+                    "(CGV가 통과 조건을 또 올렸을 수 있습니다)"
                 ) from exc
             if exc.code == 429:
                 # 속도 제한. 서버가 알려준 만큼 기다렸다가 다시 시도한다.
