@@ -49,6 +49,7 @@ from pathlib import Path
 
 import cgv_api
 import chains
+import relay
 import megabox_api
 import notifier
 import telegram_bot
@@ -73,6 +74,9 @@ DEFAULT_CONFIG = {
     # 403 경고를 며칠에 한 번까지 보낼지. 막힌 지점을 건너뛰고 계속 도는
     # 구조라, 같은 경고가 시간마다 오면 알림만 시끄럽고 할 일은 없다.
     "block_warn_hours": 24,
+    # 알림을 보낼 때만 제3자 중계 API 에 '무슨 영화냐'를 물어 제목을 붙인다.
+    # 감시 자체에는 쓰지 않는다. 꺼도 알림은 그대로 가고 제목만 빠진다.
+    "use_relay": True,
     # CGV 예매 오픈은 주 단위 배치로 주간에 일어난다. 새벽에는 감속해서
     # 불필요한 요청을 줄인다 (그래도 완전히 멈추지는 않는다).
     "quiet_hours": {"start": 1, "end": 7, "slowdown": 10},
@@ -447,6 +451,45 @@ def build_screen_message(site_nm, screen, prev, cur, site_no=""):
     ])
 
 
+def _titles_block(by_date, keyword=None):
+    """중계가 준 제목들을 알림에 붙일 꼴로 만든다.
+
+    남의 서버가 준 문자열이다. relay 에서 이미 길이를 자르고 줄바꿈을
+    없앴고, 여기서 한 번 더 HTML 이스케이프한다.
+    """
+    esc = html.escape
+    lines = ["", "\U0001F4CB <b>걸려 있는 영화</b> (중계 조회)"]
+    for ymd in sorted(by_date):
+        names = by_date[ymd]
+        if not names:
+            continue
+        lines.append("  <b>{}</b>".format(fmt_date(ymd)))
+        for nm in names[:8]:
+            mark = "  \u2190 찾던 영화" if keyword and keyword in nm else ""
+            lines.append("    · {}{}".format(esc(nm), mark))
+        if len(names) > 8:
+            lines.append("    · 외 {}편".format(len(names) - 8))
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+def enrich_with_titles(cfg, site_no, dates, keyword=None):
+    """알림에 붙일 제목 덩어리. 실패하면 그 사실을 적은 짧은 줄.
+
+    여기서 나는 예외는 전부 삼킨다. 제목을 못 붙이는 것 때문에 알림이
+    통째로 안 가는 일은 없어야 한다.
+    """
+    if not cfg.get("use_relay", True):
+        return ""
+    try:
+        by_date, _hit = relay.find_titles(site_no, dates, keyword=keyword)
+    except Exception as exc:
+        log("  제목 조회 실패(무시): {}".format(exc))
+        by_date = {}
+    if not by_date:
+        return "\n\n(제목은 확인하지 못했습니다. 들어가서 보세요.)"
+    return "\n" + _titles_block(by_date, keyword)
+
+
 def build_blocked_message(blocked, cfg=None):
     """일부 지점만 403 일 때의 경고. 나머지는 계속 돈다는 걸 분명히 한다."""
     esc = html.escape
@@ -628,7 +671,14 @@ def run_once(cfg, state, dry_run=False):
                "게이트 변화" if changed else "정기 전체 스캔")
         # 특별관 편수 감시. 게이트에 이미 들어 있는 값이라 추가 요청이 없다.
         if unit == "screen":
-            cur = str(snap.get("screens", {}).get(screen, "0"))
+            # 특별관 조회가 간헐적으로 빈 응답을 준다 (403 과는 별개로
+            # 빈 배열이 온다). 그걸 '0편'으로 읽으면 1편 -> 0편 -> 1편 으로
+            # 요동치며 헛알림이 나간다. 모르는 것은 모르는 대로 둔다.
+            screens = snap.get("screens") or {}
+            if not screens:
+                log("  {}: 특별관 응답이 비어 있음 — 이번은 건너뜁니다".format(label))
+                continue
+            cur = str(screens.get(screen, "0"))
             counts = state.setdefault("screen_counts", {})
             prev = counts.get(tid)
             key = screen_key(site_no, screen, cur)
@@ -644,12 +694,16 @@ def run_once(cfg, state, dry_run=False):
                 counts[tid] = cur
                 continue
             log("  {}: {} -> {}편 -> {}편".format(label, why, prev, cur))
+            # 어느 날짜에 뭐가 들어왔는지 모르므로 열린 날짜를 훑는다.
+            # 찾던 영화가 나오면 거기서 멈춘다.
+            extra = enrich_with_titles(cfg, site_no, snap.get("dates") or [],
+                                       target.get("movie_keyword"))
             # 여기서는 편수를 갱신하지 않는다. 갱신은 그 편수를 '알린
             # 것으로 인정'했을 때(= seen 에 들어갔을 때)만 위 가지에서
             # 한다. 지금 갱신해버리면 전송이 실패해 다시 보낼 때
             # '3편 -> 3편' 처럼 직전 값이 사라진 메시지가 나간다.
             messages.append((
-                build_screen_message(site_nm, screen, prev, cur, site_no),
+                build_screen_message(site_nm, screen, prev, cur, site_no) + extra,
                 [key], booking_button(site_no, site_nm)))
             continue
 
@@ -674,8 +728,12 @@ def run_once(cfg, state, dry_run=False):
                 seen.update(fresh)
                 continue
             for key, ymd in sorted(fresh.items(), key=lambda kv: kv[1]):
-                messages.append((build_date_message(site_nm, ymd, site_no),
-                                 [key], booking_button(site_no, site_nm)))
+                text = build_date_message(site_nm, ymd, site_no)
+                # 그 날짜 하나만 물으면 된다. 중계 요청 1건.
+                text += enrich_with_titles(cfg, site_no, [ymd],
+                                           target.get("movie_keyword"))
+                messages.append((text, [key],
+                                 booking_button(site_no, site_nm)))
             continue
 
         if site_no not in scanned:
