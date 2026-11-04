@@ -991,6 +991,84 @@ def test_block_isolation(fake):
           state.get("blocked") is False, state.get("blocked"))
 
 
+def test_screen_watch(fake):
+    """특별관 편수 변화 감시. 제목이 없어도 '새 영화 들어옴'은 잡는다."""
+    print("\n[22] 특별관 편수 감시")
+    fake.reset()
+
+    def scr(site="0345", nm="대구", screen="아이맥스"):
+        return {"site_no": site, "site_nm": nm,
+                "screen": screen, "notify": "screen"}
+
+    check("notify=screen 은 알림 단위가 screen",
+          watcher.granularity_of(scr()) == "screen")
+    check("설명에 지점과 상영관이 들어간다",
+          watcher.describe(scr()) == "대구 아이맥스 편수",
+          watcher.describe(scr()))
+
+    # 아이맥스 1편 상태에서 시작
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+    cfg = config(scr())
+    state = fresh_state()
+    msgs, state = run(cfg, state)
+    check("새 대상이면 지금 편수는 기준선으로만 잡는다", not msgs, msgs)
+    check("기준선 키가 저장된다",
+          watcher.screen_key("0345", "아이맥스", "1") in state["seen"],
+          state["seen"])
+
+    # 같은 편수면 조용하다
+    msgs, state = run(cfg, state)
+    check("편수가 그대로면 알리지 않는다", not msgs, msgs)
+
+    # 아이맥스에 새 영화가 들어온다: 1편 -> 2편
+    fake.set("0345", D2, [row("0345", "M2", "듄", D2, "1900")])
+    msgs, state = run(cfg, state)
+    check("편수가 늘면 알린다", len(msgs) == 1, msgs)
+    check("알림에 1편 -> 2편 이 들어간다",
+          msgs and "1편" in msgs[0][0] and "2편" in msgs[0][0],
+          msgs and msgs[0][0])
+    check("예매 버튼이 붙는다", msgs and msgs[0][2])
+
+    msgs, state = run(cfg, state)
+    check("같은 편수를 두 번 알리지 않는다", not msgs, msgs)
+
+    # 다른 상영관 편수가 바뀌어도 아이맥스 감시는 조용하다
+    fake.set("0345", D2, fake.data["0345"][D2] + [
+        row("0345", "M3", "코난", D2, "1200", grade="4DX", fmt="4DX 2D")])
+    msgs, state = run(cfg, state)
+    check("다른 상영관이 바뀌어도 아이맥스 감시는 조용하다", not msgs, msgs)
+
+    # 전송 실패를 흉내낸다: seen 에 안 들어가면 다음에 다시 알린다
+    fake.set("0345", D1, fake.data["0345"][D1] + [
+        row("0345", "M4", "아바타", D1, "2100")])
+    import copy as _copy
+    msgs, _state2 = watcher.run_once(cfg, _copy.deepcopy(state), dry_run=True)
+    check("편수가 또 늘면 알린다", len(msgs) == 1, msgs)
+    check("알림에 직전 편수가 제대로 들어간다",
+          msgs and "2편" in msgs[0][0] and "3편" in msgs[0][0],
+          msgs and msgs[0][0])
+    # deliver 가 실패해 seen 이 갱신되지 않은 상태를 그대로 다시 돌린다
+    msgs2, _ = watcher.run_once(cfg, _copy.deepcopy(state), dry_run=True)
+    check("전송이 실패했으면 다음 실행에서 다시 알린다  <- 저장해두고 비교하면 놓친다",
+          len(msgs2) == 1, msgs2)
+    check("다시 보낼 때도 직전 편수가 그대로다  <- '3편 -> 3편' 이 나가면 안 된다",
+          msgs2 and "2편" in msgs2[0][0] and "3편" in msgs2[0][0],
+          msgs2 and msgs2[0][0])
+
+    # 설정에서 빼면 편수 기록도 함께 지워진다
+    _msgs, state3 = run(config(target()), dict(state))
+    check("지운 대상의 편수 기록은 남지 않는다",
+          not state3.get("screen_counts"), state3.get("screen_counts"))
+
+    # 요청 수: 편수 감시는 게이트에 들어 있는 값이라 추가 요청이 없다
+    fake.gate_calls = 0
+    fake.schedule_calls = 0
+    run(config(scr()), dict(fresh_state(), initialized=True))
+    check("편수 감시는 게이트 1회 말고 추가 요청이 없다",
+          fake.gate_calls == 1 and fake.schedule_calls == 0,
+          (fake.gate_calls, fake.schedule_calls))
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1015,6 +1093,7 @@ def main():
         test_commit_noise(fake)
         test_date_watch(fake)
         test_block_isolation(fake)
+        test_screen_watch(fake)
     finally:
         fake.restore()
 

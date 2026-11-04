@@ -12,6 +12,24 @@
       "site_nm": "대구",
       "notify": "date",
       "watch_date": "20261216"
+    },
+    {
+      "site_no": "0345",
+      "site_nm": "대구",
+      "screen": "아이맥스",
+      "notify": "screen"
+    },
+    {
+      "site_no": "0089",
+      "site_nm": "센텀시티",
+      "notify": "date",
+      "watch_date": "20261216"
+    },
+    {
+      "site_no": "0128",
+      "site_nm": "울산삼산",
+      "notify": "date",
+      "watch_date": "20261216"
     }
   ],
   "notify_on_first_run": false,

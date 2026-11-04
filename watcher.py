@@ -166,8 +166,8 @@ def granularity_of(target):
     시간표 주소가 403 으로 막혀 있어도 '그 날짜가 열렸나'는 알 수 있다.
     """
     notify = target.get("notify")
-    if notify == "date":
-        return "date"
+    if notify in ("date", "screen"):
+        return notify
     return "movie" if notify == "movie" else "schedule"
 
 
@@ -187,6 +187,9 @@ def target_id(target):
 
 
 def describe(target):
+    if granularity_of(target) == "screen":
+        return "{} {} 편수".format(
+            target.get("site_nm", target["site_no"]), screen_of(target))
     if granularity_of(target) == "date":
         wanted = sorted(watch_dates_of(target))
         what = ("/".join(fmt_date(d) for d in wanted) + " 열리면"
@@ -309,6 +312,16 @@ def date_key(site_no, ymd):
     return "D|{}|{}".format(site_no, ymd)
 
 
+def screen_key(site_no, screen, count):
+    """특별관 편수 키. 이 편수로 이미 알렸는지를 seen 으로 판단한다.
+
+    편수를 state 에 따로 저장해 비교하지 않고 seen 을 쓰는 이유: 알림
+    전송이 실패하면 seen 에 안 들어가므로 다음 실행에서 다시 보낸다.
+    저장해두고 비교하면 전송 실패한 변화를 영영 놓친다.
+    """
+    return "S|{}|{}|{}".format(site_no, screen, count)
+
+
 def prune_seen(seen, alive_movie_keys=None):
     """오래된 키를 버려 state.json 이 무한히 커지지 않게 한다.
 
@@ -406,6 +419,29 @@ def build_date_message(site_nm, ymd, site_no=""):
         "",
         "회차와 영화는 이 알림으로 알 수 없습니다 "
         "(CGV 시간표 조회가 막혀 있습니다). 바로 들어가서 확인하세요.",
+        "",
+        esc(booking_url(site_no, site_nm)),
+    ])
+
+
+def build_screen_message(site_nm, screen, prev, cur, site_no=""):
+    """특별관 편수가 바뀌었다는 알림.
+
+    제목은 알 수 없다 (시간표가 403). 편수는 회차 수가 아니라 그
+    상영관에서 상영 중인 영화 편수여서, 늘었다면 새 영화가 들어온 것이다.
+    """
+    esc = html.escape
+    moved = ("{}편 → <b>{}편</b>".format(prev, cur) if prev is not None
+             else "<b>{}편</b>".format(cur))
+    return "\n".join([
+        "\U0001F3AC <b>{} {} 라인업이 바뀌었습니다.</b>".format(
+            chains.label(site_no), esc(screen)),
+        "",
+        "  <b>{}</b>".format(esc(site_nm)),
+        "  {}".format(moved),
+        "",
+        "어떤 영화인지는 이 알림으로 알 수 없습니다 "
+        "(CGV 시간표 조회가 막혀 있습니다). 들어가서 확인하세요.",
         "",
         esc(booking_url(site_no, site_nm)),
     ])
@@ -590,6 +626,33 @@ def run_once(cfg, state, dry_run=False):
         why = ("새 대상 기준선" if new_target else
                "첫 실행" if first_run else
                "게이트 변화" if changed else "정기 전체 스캔")
+        # 특별관 편수 감시. 게이트에 이미 들어 있는 값이라 추가 요청이 없다.
+        if unit == "screen":
+            cur = str(snap.get("screens", {}).get(screen, "0"))
+            counts = state.setdefault("screen_counts", {})
+            prev = counts.get(tid)
+            key = screen_key(site_no, screen, cur)
+            baselined.add(tid)
+            if key in seen:
+                counts[tid] = cur
+                log("  {}: {} -> {}편 (알린 적 있음)".format(label, why, cur))
+                continue
+            if (first_run or new_target) and not cfg.get("notify_on_first_run", False):
+                log("    {}이라 {}편을 기준선으로만 저장".format(
+                    "첫 실행" if first_run else "새 대상", cur))
+                seen.add(key)
+                counts[tid] = cur
+                continue
+            log("  {}: {} -> {}편 -> {}편".format(label, why, prev, cur))
+            # 여기서는 편수를 갱신하지 않는다. 갱신은 그 편수를 '알린
+            # 것으로 인정'했을 때(= seen 에 들어갔을 때)만 위 가지에서
+            # 한다. 지금 갱신해버리면 전송이 실패해 다시 보낼 때
+            # '3편 -> 3편' 처럼 직전 값이 사라진 메시지가 나간다.
+            messages.append((
+                build_screen_message(site_nm, screen, prev, cur, site_no),
+                [key], booking_button(site_no, site_nm)))
+            continue
+
         # 날짜 감시는 여기서 끝난다. 시간표를 조회하지 않으므로 막힌
         # 주소를 건드리지 않고, 추가 요청도 없다 (게이트에 날짜가 들어 있다).
         if unit == "date":
@@ -676,7 +739,11 @@ def run_once(cfg, state, dry_run=False):
 
     # 설정에서 지워진 대상의 기록은 함께 버린다. 나중에 다시 추가하면
     # 그때 새 대상으로 보고 기준선을 다시 잡는 게 맞다.
-    state["baselined"] = sorted(baselined & {target_id(t) for t in cfg["targets"]})
+    live_ids = {target_id(t) for t in cfg["targets"]}
+    state["baselined"] = sorted(baselined & live_ids)
+    if "screen_counts" in state:
+        state["screen_counts"] = {
+            k: v for k, v in state["screen_counts"].items() if k in live_ids}
     if blocked:
         if note_blocked(cfg, state):
             messages.append((build_blocked_message(blocked, cfg), [], None))
