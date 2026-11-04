@@ -36,6 +36,10 @@
       "site_nm": "대구",
       "notify": "date",
       "movie_keyword": "듄"
+    },
+    {
+      "notify": "listing",
+      "movie_keyword": "듄"
     }
   ],
   "notify_on_first_run": false,

@@ -166,7 +166,7 @@ def granularity_of(target):
     시간표 주소가 403 으로 막혀 있어도 '그 날짜가 열렸나'는 알 수 있다.
     """
     notify = target.get("notify")
-    if notify in ("date", "screen"):
+    if notify in ("date", "screen", "listing"):
         return notify
     return "movie" if notify == "movie" else "schedule"
 
@@ -187,7 +187,7 @@ def target_id(target):
     같아서 한쪽이 기준선을 잡으면 다른 쪽도 잡은 것으로 쳐버린다.
     """
     base = "{}|{}|{}|{}".format(
-        target["site_no"], screen_of(target),
+        target.get("site_no", "CGV"), screen_of(target),
         normalize(target.get("movie_keyword", "")), granularity_of(target))
     if granularity_of(target) == "date":
         base += "|" + ",".join(sorted(watch_dates_of(target)))
@@ -195,6 +195,9 @@ def target_id(target):
 
 
 def describe(target):
+    if granularity_of(target) == "listing":
+        return "CGV 예매 목록에 '{}' 뜨면".format(
+            target.get("movie_keyword", "") or "새 영화")
     if granularity_of(target) == "screen":
         scr = screen_of(target)
         return "{} {}".format(
@@ -322,6 +325,11 @@ def date_key(site_no, ymd):
     return "D|{}|{}".format(site_no, ymd)
 
 
+def listing_key(mov_no, mov_nm):
+    """예매 목록 키. 영화번호가 있으면 그걸 쓰고 없으면 제목으로."""
+    return "L|{}".format(mov_no or normalize(mov_nm))
+
+
 def screen_key(site_no, screen, count):
     """특별관 편수 키. 이 편수로 이미 알렸는지를 seen 으로 판단한다.
 
@@ -444,6 +452,30 @@ def fmt_screens(mapping):
 def _fmt_count(value):
     """숫자면 'N편', 아니면(전체 현황 문자열) 그대로."""
     return "{}편".format(value) if str(value).isdigit() else str(value)
+
+
+def build_listing_message(mov_nm, rate=None):
+    """CGV 예매 목록(예매율 순)에 그 영화가 올라왔다는 알림.
+
+    지점은 알 수 없다. 전국 목록이기 때문이다. 하지만 '예매가 열렸다'는
+    사실 자체를 제목으로 확인해주는 유일한 신호다.
+    """
+    esc = html.escape
+    lines = [
+        "\U0001F39F <b>CGV 예매 목록에 떴습니다!</b>",
+        "",
+        "  <b>{}</b>".format(esc(mov_nm)),
+    ]
+    if rate not in (None, ""):
+        lines.append("  예매율 {}".format(esc(str(rate))))
+    lines += [
+        "",
+        "CGV 어딘가에서 <b>예매가 열렸다</b>는 뜻입니다. "
+        "어느 지점인지는 이 알림으로 알 수 없습니다. 바로 확인하세요.",
+        "",
+        esc(BOOK_URL),
+    ]
+    return "\n".join(lines)
 
 
 def build_screen_message(site_nm, screen, prev, cur, site_no=""):
@@ -603,13 +635,57 @@ def run_once(cfg, state, dry_run=False):
     # 열린 날짜만 보는 지점은 특별관 현황을 조회할 필요가 없다. 그 지점을
     # 보는 대상이 전부 날짜 감시면 게이트 요청이 2건에서 1건으로 줄어든다.
     scan_sites = {t["site_no"] for t in cfg["targets"]
-                  if granularity_of(t) != "date"}
+                  if granularity_of(t) not in ("date", "listing")}
+
+    # 전국 예매 목록 감시. 지점과 무관하고 사이클당 요청 1건이다.
+    # CGV 에서 '제목' 을 볼 수 있는 유일하게 안 막힌 길이라, 어느 지점인지는
+    # 몰라도 "그 영화 예매가 열렸다" 는 사실은 제목으로 확인해준다.
+    listing = [t for t in cfg["targets"] if granularity_of(t) == "listing"]
+    if listing:
+        try:
+            playing = cgv_api.get_now_playing()
+        except chains.BLOCKED_ERRORS as exc:
+            blocked["예매목록"] = exc
+            playing = None
+            log("  예매 목록: 403 — 건너뜁니다")
+        for target in (listing if playing is not None else []):
+            tid = target_id(target)
+            new_target = tid not in baselined
+            label = describe(target)
+            keyword = target.get("movie_keyword", "")
+            fresh = {}
+            for m in playing:
+                if not keyword or not matches(m.get("movNm"), keyword):
+                    continue
+                key = listing_key(m.get("movNo"), m.get("movNm"))
+                if key not in seen:
+                    fresh[key] = m
+            # 0건이어도 기준선은 잡은 것으로 친다. 아직 안 올라온 영화를
+            # 기다리는 게 이 감시의 목적이다.
+            baselined.add(tid)
+            if not fresh:
+                log("  {}: 아직 목록에 없음".format(label))
+                continue
+            if (first_run or new_target) and not cfg.get("notify_on_first_run", False):
+                log("    {}이라 {}건을 기준선으로만 저장: {}".format(
+                    "첫 실행" if first_run else "새 대상", len(fresh),
+                    ", ".join(str(m.get("movNm")) for m in fresh.values())))
+                seen.update(fresh)
+                continue
+            for key, m in sorted(fresh.items()):
+                log("  {}: '{}' 올라옴".format(label, m.get("movNm")))
+                messages.append((
+                    build_listing_message(m.get("movNm"), m.get("atktRate")),
+                    [key],
+                    [[{"text": "\U0001F39F CGV 예매 페이지", "url": BOOK_URL}]]))
 
     force_scan = full_scan_due(cfg, state)
     if force_scan:
         state["last_full_scan"] = datetime.now(KST).isoformat(timespec="seconds")
 
     for target in cfg["targets"]:
+        if granularity_of(target) == "listing":
+            continue          # 지점이 없는 대상. 위에서 이미 처리했다.
         site_no = target["site_no"]
         site_nm = target.get("site_nm", site_no)
         screen = screen_of(target)
@@ -836,7 +912,30 @@ def check_summary():
         return "감시 중인 대상이 없습니다. /add 로 추가하세요."
     lines = []
     for target in cfg["targets"]:
+        unit = granularity_of(target)
+        if unit == "listing":
+            lines.append("{} — 전국 예매 목록".format(describe(target)))
+            continue
         site_no = target["site_no"]
+        if unit in ("date", "screen"):
+            # 시간표를 조회하지 않는 대상이다. 회차를 세어봐야 403 만 난다.
+            try:
+                snap = gate_snapshot(site_no, dates_only=(unit == "date"))
+            except Exception as exc:
+                lines.append("{} — 조회 실패: {}".format(
+                    describe(target), str(exc)[:60]))
+                continue
+            if unit == "date":
+                wanted = sorted(watch_dates_of(target))
+                hit = [d for d in snap["dates"] if not wanted or d in wanted]
+                lines.append("{} — {}".format(
+                    describe(target),
+                    "열림: " + ", ".join(fmt_date(d) for d in hit[:6])
+                    if hit else "아직 안 열림"))
+            else:
+                lines.append("{} — {}".format(
+                    describe(target), fmt_screens(snap.get("screens"))))
+            continue
         try:
             dates = gate_snapshot(site_no)["dates"]
             rows = select_rows(scan_site(site_no, dates),
