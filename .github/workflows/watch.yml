@@ -69,17 +69,28 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          for attempt in 1 2 3; do
+          # 재시도 간격. 3초로 세 번이면 10초 안에 끝나버려서, GitHub 쪽
+          # 일시 장애(Internal Server Error)를 넘기지 못하고 실패했다.
+          BACKOFF="5 15 30"
+          attempt=0
+          for wait in $BACKOFF; do
+            attempt=$((attempt + 1))
+
             if ! git fetch -q origin "${GITHUB_REF_NAME}"; then
-              echo "fetch 실패. 다시 시도 ($attempt/3)"
-              sleep 3
+              echo "fetch 실패. ${wait}초 뒤 다시 시도 ($attempt/3)"
+              sleep "$wait"
               continue
             fi
             if ! git reset -q --hard "origin/${GITHUB_REF_NAME}"; then
-              echo "reset 실패. 다시 시도 ($attempt/3)"
-              sleep 3
+              echo "reset 실패. ${wait}초 뒤 다시 시도 ($attempt/3)"
+              sleep "$wait"
               continue
             fi
+
+            # 병합 전 원격 상태를 떠둔다. 아래에서 '커밋할 가치가 있나'를
+            # 이것과 비교해서 판단한다.
+            git show HEAD:state.json > /tmp/base-state.json 2>/dev/null \
+              || echo '{}' > /tmp/base-state.json
 
             # config 를 먼저 제자리에 돌려놓는다. merge_state 가 이 파일을
             # 읽어서 삭제된 감시 대상의 기준선 기록을 걸러내기 때문에,
@@ -94,14 +105,23 @@ jobs:
               exit 0
             fi
 
+            # 점검 횟수(run_no)와 마지막 점검 시각만 바뀐 커밋은 남기지
+            # 않는다. 5분마다 그것만 커밋하다가 main 에 커밋이 2만 개 넘게
+            # 쌓였고, 커밋마다 GitHub Pages 까지 다시 빌드됐다.
+            if [ -z "$CONFIG_CHANGED" ] \
+               && ! python merge_state.py --changed /tmp/base-state.json state.json; then
+              echo "점검 횟수만 바뀜. 커밋 생략"
+              exit 0
+            fi
+
             git add state.json config.json
             git commit -q -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
             if git push -q origin "HEAD:${GITHUB_REF_NAME}"; then
               echo "커밋 완료 (시도 $attempt)"
               exit 0
             fi
-            echo "push 경합 발생. 다시 시도 ($attempt/3)"
-            sleep 3
+            echo "push 실패. ${wait}초 뒤 다시 시도 ($attempt/3)"
+            sleep "$wait"
           done
           echo "3회 시도 후에도 push 실패"
           exit 1

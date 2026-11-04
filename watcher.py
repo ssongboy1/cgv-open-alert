@@ -27,7 +27,7 @@
              (한 응답에 둘 다 들어 있다)
 
 이미 열린 날짜 안에서 회차/영화만 늘어나는 경우는 게이트로 잡히지 않으므로
-full_scan_every_runs 회마다 강제로 전체 스캔한다.
+full_scan_every_minutes 분마다 강제로 전체 스캔한다.
 
 극장사별 차이는 chains.py 가 전부 흡수한다. 회차 dict 는 두 극장사 모두
 CGV 필드 이름을 쓰므로 이 파일은 극장사를 거의 의식하지 않는다.
@@ -68,7 +68,7 @@ SCREEN_ALIASES = dict(chains.SCREEN_ALIASES)
 
 DEFAULT_CONFIG = {
     "targets": [],
-    "full_scan_every_runs": 30,
+    "full_scan_every_minutes": 30,
     "notify_on_first_run": False,
     # CGV 예매 오픈은 주 단위 배치로 주간에 일어난다. 새벽에는 감속해서
     # 불필요한 요청을 줄인다 (그래도 완전히 멈추지는 않는다).
@@ -381,11 +381,41 @@ def select_rows(rows, screen, keyword):
     return out
 
 
+def full_scan_minutes(cfg):
+    """강제 전체 스캔 간격(분). 예전 설정 키도 읽어준다."""
+    minutes = cfg.get("full_scan_every_minutes")
+    if minutes is None:
+        # full_scan_every_runs 는 '몇 사이클마다'였고 1사이클이 약 1분이었다.
+        # 그대로 분으로 읽으면 기존 설정과 같은 간격이 된다.
+        minutes = cfg.get("full_scan_every_runs", 30)
+    try:
+        return max(1, int(minutes))
+    except (TypeError, ValueError):
+        return 30
+
+
+def full_scan_due(cfg, state, now=None):
+    """강제 전체 스캔을 할 때가 됐나.
+
+    예전에는 run_no % N 으로 셌다. 그러면 간격을 지키려고 run_no 를 매
+    실행 커밋해야 하는데, 그 커밋이 5분마다 git 에 쌓여 main 에 2만 개가
+    넘었다(그중 거의 전부가 숫자 하나만 바뀐 커밋이다). 시각으로 재면
+    run_no 를 커밋하지 않아도 간격이 정확히 지켜진다.
+    """
+    last = state.get("last_full_scan")
+    if not last:
+        return True
+    try:
+        prev = datetime.fromisoformat(last)
+    except (TypeError, ValueError):
+        return True
+    now = now or datetime.now(KST)
+    return now - prev >= timedelta(minutes=full_scan_minutes(cfg))
+
+
 def run_once(cfg, state, dry_run=False):
     """1회 점검. (알림 메시지 목록, 갱신된 state) 반환."""
     state["run_no"] = state.get("run_no", 0) + 1
-    every = max(1, int(cfg.get("full_scan_every_runs", 30)))
-    force_scan = state["run_no"] % every == 1
     first_run = not state.get("initialized", False)
 
     seen = set(state.get("seen", []))
@@ -407,6 +437,12 @@ def run_once(cfg, state, dry_run=False):
         state["baselined"] = []
         state["gates"] = {}
         return messages, state
+
+    # 대상이 있을 때만 판정한다. 대상이 없는데 기록을 남기면 '의미 있는
+    # 변화'로 보여서 아무 일도 안 하면서 커밋만 하게 된다.
+    force_scan = full_scan_due(cfg, state)
+    if force_scan:
+        state["last_full_scan"] = datetime.now(KST).isoformat(timespec="seconds")
 
     for target in cfg["targets"]:
         site_no = target["site_no"]
@@ -635,8 +671,8 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config()
-    log("감시 대상 {}건, 강제 전체 스캔 주기 {}회".format(
-        len(cfg["targets"]), cfg.get("full_scan_every_runs")))
+    log("감시 대상 {}건, 강제 전체 스캔 주기 {}분".format(
+        len(cfg["targets"]), full_scan_minutes(cfg)))
 
     while True:
         try:

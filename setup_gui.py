@@ -438,7 +438,7 @@ class App(tk.Tk):
         ).grid(row=0, column=0, sticky="w", **PAD)
 
         ttk.Label(box, text="전체 스캔 주기").grid(row=1, column=0, sticky="w", **PAD)
-        self.scan_var = tk.IntVar(value=int(self.cfg.get("full_scan_every_runs", 30)))
+        self.scan_var = tk.IntVar(value=int(self.cfg.get("full_scan_every_minutes", self.cfg.get("full_scan_every_runs", 30))))
         ttk.Spinbox(box, from_=1, to=200, textvariable=self.scan_var, width=6).grid(
             row=1, column=1, sticky="w")
         ttk.Label(box, foreground="#666",
@@ -458,7 +458,7 @@ class App(tk.Tk):
     def _save(self):
         cfg = {
             "targets": self.targets,
-            "full_scan_every_runs": int(self.scan_var.get()),
+            "full_scan_every_minutes": int(self.scan_var.get()),
             "notify_on_first_run": not self.first_run_var.get(),
         }
         (ROOT / "config.json").write_text(

@@ -1,10 +1,18 @@
 {
-  "targets": [],
-  "full_scan_every_runs": 30,
+  "targets": [
+    {
+      "site_no": "MB7011",
+      "site_nm": "대구신세계(동대구)",
+      "screen": "ALL",
+      "movie_keyword": "듄",
+      "notify": "schedule"
+    }
+  ],
   "notify_on_first_run": false,
   "quiet_hours": {
     "start": 1,
     "end": 7,
     "slowdown": 10
-  }
+  },
+  "full_scan_every_minutes": 30
 }

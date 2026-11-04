@@ -4,6 +4,10 @@
     python merge_state.py <우리것.json> <원격것.json>
     -> 원격것.json 자리에 병합 결과를 쓴다.
 
+    python merge_state.py --changed <이전.json> <지금.json>
+    -> 의미 있게 달라졌으면 종료코드 0, 아니면 1.
+       워크플로가 '커밋할 가치가 있나'를 묻는 데 쓴다.
+
 왜 필요한가
 -----------
 cron-job.org 트리거와 시간별 안전망 cron 이 겹치면 두 실행이 각각
@@ -84,6 +88,19 @@ def merge(ours, theirs, target_ids=None):
     return out
 
 
+# 이것만 바뀐 커밋은 남길 가치가 없다. 점검 횟수와 마지막 점검 시각은
+# 5분마다 바뀌는데, 그걸 그대로 커밋하다가 main 에 커밋이 2만 개 넘게
+# 쌓였고 매 커밋마다 GitHub Pages 까지 다시 빌드됐다.
+NOISE_KEYS = ("run_no", "last_run")
+
+
+def meaningful_diff(before, after):
+    """숫자 하나 올라간 것 말고 진짜 달라진 게 있나."""
+    def strip(d):
+        return {k: v for k, v in d.items() if k not in NOISE_KEYS}
+    return strip(before) != strip(after)
+
+
 def load(path):
     try:
         with open(path, encoding="utf-8") as fp:
@@ -93,6 +110,10 @@ def load(path):
 
 
 def main():
+    if sys.argv[1] == "--changed":
+        before, after = load(sys.argv[2]), load(sys.argv[3])
+        sys.exit(0 if meaningful_diff(before, after) else 1)
+
     ours_path, theirs_path = sys.argv[1], sys.argv[2]
     config_path = sys.argv[3] if len(sys.argv) > 3 else "config.json"
     ours, theirs = load(ours_path), load(theirs_path)
