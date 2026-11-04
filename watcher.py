@@ -867,12 +867,17 @@ def run_once(cfg, state, dry_run=False):
         state["screen_counts"] = {
             k: v for k, v in state["screen_counts"].items() if k in live_ids}
     if blocked:
+        # 무엇이 막혔는지 남긴다. 'blocked: true' 만 있으면 몇 주를 돌려도
+        # 어느 조회가 말썽인지 알 수 없다. 경고는 하루 한 번뿐이라 더욱
+        # 그렇다. state 에 적어두면 아무 때나 들여다볼 수 있다.
+        state["blocked_sites"] = sorted(blocked)
         if note_blocked(cfg, state):
             messages.append((build_blocked_message(blocked, cfg), [], None))
         else:
             log("  차단 경고는 최근에 이미 보냈으므로 생략")
     else:
         state["blocked"] = False
+        state.pop("blocked_sites", None)
 
     state["seen"] = sorted(prune_seen(seen, alive_movie_keys or None))
     state["gates"] = new_gates

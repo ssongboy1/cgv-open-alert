@@ -958,6 +958,9 @@ def test_block_isolation(fake):
         check("403 경고도 함께 온다",
               any("403" in m[0] for m in msgs), [m[0][:40] for m in msgs])
         check("차단 기록이 state 에 남는다", state.get("blocked") is True)
+        check("무엇이 막혔는지도 남는다  <- 없으면 몇 주를 돌려도 모른다",
+              state.get("blocked_sites") == ["0345"],
+              state.get("blocked_sites"))
 
         # 막힌 대상은 기준선을 '잡았다'고 기록하면 안 된다. 그러면 다음에
         # 풀렸을 때 지금 열려 있는 회차를 몽땅 새것으로 알린다.
@@ -989,6 +992,8 @@ def test_block_isolation(fake):
     _msgs, state = watcher.run_once(cfg, state, dry_run=True)
     check("정상으로 돌아오면 차단 기록이 내려간다",
           state.get("blocked") is False, state.get("blocked"))
+    check("막힌 목록도 치운다",
+          "blocked_sites" not in state, state.get("blocked_sites"))
 
 
 def test_screen_watch(fake):
