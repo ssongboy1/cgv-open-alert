@@ -101,6 +101,12 @@ class FakeCgv:
         return list(self.data.get(site, {}).get(ymd, []))
 
 
+def old_scan_time():
+    """전체 스캔 주기가 지난 것처럼 보이게 하는 시각."""
+    return (datetime.now(watcher.KST) - timedelta(hours=2)).isoformat(
+        timespec="seconds")
+
+
 def fresh_state():
     return {"initialized": False, "run_no": 0, "seen": [], "gates": {}}
 
@@ -112,7 +118,7 @@ def target(site="0345", nm="대구", screen="아이맥스", kw="오디세이",
 
 
 def config(*targets, **kw):
-    cfg = {"targets": list(targets), "full_scan_every_runs": 30,
+    cfg = {"targets": list(targets), "full_scan_every_minutes": 30,
            "notify_on_first_run": False}
     cfg.update(kw)
     return cfg
@@ -169,13 +175,13 @@ def test_core(fake):
 
     # (다) 이미 열린 날짜에 같은 영화의 회차만 추가되는 경우.
     #      게이트(편수·날짜)가 그대로라 즉시로는 못 잡는다. 설계상 그렇고,
-    #      full_scan_every_runs 마다 도는 강제 전체 스캔이 안전망이다.
+    #      full_scan_every_minutes 마다 도는 강제 전체 스캔이 안전망이다.
     fake.set("0345", D2, fake.data["0345"][D2] + [
         row("0345", "M1", "오디세이", D2, "1500")])
     msgs, st = run(cfg, st)
     check("증회는 게이트로 즉시 잡히지 않는다 (설계상)", len(msgs) == 0, msgs)
 
-    st["run_no"] = cfg["full_scan_every_runs"]      # 다음 실행이 강제 전체 스캔
+    st["last_full_scan"] = old_scan_time()         # 다음 실행이 강제 전체 스캔
     msgs, st = run(cfg, st)
     check("증회도 강제 전체 스캔에서는 잡힌다  <- 안전망", len(msgs) == 1, msgs)
 
@@ -697,9 +703,78 @@ def test_gate_width(fake):
     msgs, st = run(cfg, st)
     check("일반관 새 영화는 게이트로는 못 잡는다 (설계상)", len(msgs) == 0, msgs)
 
-    st["run_no"] = cfg["full_scan_every_runs"]
+    st["last_full_scan"] = old_scan_time()
     msgs, st = run(cfg, st)
     check("일반관도 정기 전체 스캔에서는 잡힌다  <- 안전망", len(msgs) == 1, msgs)
+
+
+def test_commit_noise(fake):
+    """커밋을 줄이려고 바꾼 두 가지가 제대로 도는지.
+
+    main 에 커밋이 2만 개 넘게 쌓였고 거의 전부가 숫자 하나만 바뀐
+    커밋이었다. 원인은 둘이다.
+      (1) 전체 스캔 주기를 run_no 로 세서, run_no 를 매번 커밋해야 했다
+      (2) 바뀐 게 run_no 뿐이어도 커밋했다
+    """
+    print("\n[19] 쓸데없는 커밋 줄이기")
+
+    # (1) 전체 스캔 주기를 시각으로 잰다
+    cfg = config(target(), full_scan_every_minutes=30)
+    check("기록이 없으면 전체 스캔한다  <- 첫 실행",
+          watcher.full_scan_due(cfg, {}))
+    now = datetime.now(watcher.KST)
+    just = {"last_full_scan": now.isoformat(timespec="seconds")}
+    check("방금 했으면 안 한다", not watcher.full_scan_due(cfg, just))
+    check("29분 뒤에도 안 한다",
+          not watcher.full_scan_due(cfg, just, now + timedelta(minutes=29)))
+    check("31분 뒤에는 한다",
+          watcher.full_scan_due(cfg, just, now + timedelta(minutes=31)))
+    check("기록이 깨져 있으면 그냥 한다  <- 멈추는 것보다 낫다",
+          watcher.full_scan_due(cfg, {"last_full_scan": "엉터리"}))
+
+    old_cfg = {"targets": [], "full_scan_every_runs": 45}   # 예전 설정 파일
+    check("예전 설정 키(full_scan_every_runs)도 분으로 읽는다",
+          watcher.full_scan_minutes(old_cfg) == 45)
+    check("둘 다 없으면 30분", watcher.full_scan_minutes({}) == 30)
+
+    # run_no 를 올려도 전체 스캔 판정은 흔들리지 않아야 한다.
+    # (예전에는 run_no 가 판정 기준이라, 커밋을 생략하면 간격이 망가졌다)
+    fake.reset()
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+    st = fresh_state()
+    st["last_full_scan"] = now.isoformat(timespec="seconds")
+    st["run_no"] = 0
+    msgs, st = run(cfg, st)
+    before = st["last_full_scan"]
+    for _ in range(40):                     # 예전 기준이면 중간에 걸렸을 횟수
+        msgs, st = run(cfg, st)
+    check("run_no 가 40 올라도 전체 스캔 시각은 그대로  <- 시각 기준이라서",
+          st["last_full_scan"] == before, st["last_full_scan"])
+
+    # 대상이 없으면 아무 기록도 남기지 않아야 한다. 남기면 '변화'로 보여서
+    # 아무 일도 안 하면서 커밋만 하게 된다.
+    empty_msgs, empty_st = watcher.run_once(
+        config(), {"initialized": True, "run_no": 5, "seen": [], "gates": {}},
+        dry_run=True)
+    check("감시 대상이 없으면 전체 스캔 기록을 남기지 않는다",
+          "last_full_scan" not in empty_st, empty_st.get("last_full_scan"))
+
+    # (2) 무엇을 '의미 있는 변화'로 볼 것인가
+    base = {"run_no": 10, "last_run": "2026-11-04T19:00:00+09:00",
+            "seen": ["a"], "gates": {"0345": {"x": "1"}}, "tg_offset": 7}
+    same = dict(base, run_no=99, last_run="2026-11-04T20:00:00+09:00")
+    check("점검 횟수·시각만 바뀐 건 커밋 안 함",
+          not merge_state.meaningful_diff(base, same))
+    check("알림 보낸 기록이 바뀌면 커밋함",
+          merge_state.meaningful_diff(base, dict(base, seen=["a", "b"])))
+    check("게이트가 바뀌면 커밋함",
+          merge_state.meaningful_diff(base, dict(base, gates={})))
+    check("봇 오프셋이 바뀌면 커밋함  <- 안 하면 명령을 두 번 처리한다",
+          merge_state.meaningful_diff(base, dict(base, tg_offset=8)))
+    check("전체 스캔 시각이 바뀌면 커밋함",
+          merge_state.meaningful_diff(base, dict(base, last_full_scan="x")))
+    check("차단 기록이 바뀌면 커밋함",
+          merge_state.meaningful_diff(base, dict(base, blocked=True)))
 
 
 def test_bot_security():
@@ -764,6 +839,7 @@ def main():
         test_megabox(fake)
         test_add_flow()
         test_gate_width(fake)
+        test_commit_noise(fake)
     finally:
         fake.restore()
 
