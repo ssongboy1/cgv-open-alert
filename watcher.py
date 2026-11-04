@@ -196,8 +196,10 @@ def target_id(target):
 
 def describe(target):
     if granularity_of(target) == "screen":
-        return "{} {} 편수".format(
-            target.get("site_nm", target["site_no"]), screen_of(target))
+        scr = screen_of(target)
+        return "{} {}".format(
+            target.get("site_nm", target["site_no"]),
+            "특별관 전체" if scr == SCREEN_ALL else scr + " 편수")
     if granularity_of(target) == "date":
         wanted = sorted(watch_dates_of(target))
         what = ("/".join(fmt_date(d) for d in wanted) + " 열리면"
@@ -432,6 +434,18 @@ def build_date_message(site_nm, ymd, site_no=""):
     ])
 
 
+def fmt_screens(mapping):
+    """특별관 현황을 사람이 읽고 비교할 수 있는 한 줄로."""
+    if not mapping:
+        return "(없음)"
+    return ", ".join("{} {}편".format(k, mapping[k]) for k in sorted(mapping))
+
+
+def _fmt_count(value):
+    """숫자면 'N편', 아니면(전체 현황 문자열) 그대로."""
+    return "{}편".format(value) if str(value).isdigit() else str(value)
+
+
 def build_screen_message(site_nm, screen, prev, cur, site_no=""):
     """특별관 편수가 바뀌었다는 알림.
 
@@ -439,14 +453,21 @@ def build_screen_message(site_nm, screen, prev, cur, site_no=""):
     상영관에서 상영 중인 영화 편수여서, 늘었다면 새 영화가 들어온 것이다.
     """
     esc = html.escape
-    moved = ("{}편 → <b>{}편</b>".format(prev, cur) if prev is not None
-             else "<b>{}편</b>".format(cur))
+    what = "특별관" if screen == SCREEN_ALL else screen
+    if prev is None:
+        moved = ["  <b>{}</b>".format(esc(_fmt_count(cur)))]
+    elif screen == SCREEN_ALL:
+        moved = ["  {}".format(esc(_fmt_count(prev))),
+                 "  → <b>{}</b>".format(esc(_fmt_count(cur)))]
+    else:
+        moved = ["  {} → <b>{}</b>".format(
+            esc(_fmt_count(prev)), esc(_fmt_count(cur)))]
     return "\n".join([
         "\U0001F3AC <b>{} {} 라인업이 바뀌었습니다.</b>".format(
-            chains.label(site_no), esc(screen)),
+            chains.label(site_no), esc(what)),
         "",
         "  <b>{}</b>".format(esc(site_nm)),
-        "  {}".format(moved),
+    ] + moved + [
         "",
         "어떤 영화인지는 이 알림으로 알 수 없습니다 "
         "(CGV 시간표 조회가 막혀 있습니다). 들어가서 확인하세요.",
@@ -643,22 +664,29 @@ def run_once(cfg, state, dry_run=False):
             if not screens:
                 log("  {}: 특별관 응답이 비어 있음 — 이번은 건너뜁니다".format(label))
                 continue
-            cur = str(screens.get(screen, "0"))
+            # screen 이 ALL 이면 특별관 전체를 한 덩어리로 본다. 어느
+            # 상영관이든 편수가 달라지면 알린다. 아이맥스관에 비아이맥스
+            # 영화가 들어가 있는 경우처럼, 아이맥스 숫자만 봐서는 라인업
+            # 변화를 놓칠 수 있기 때문이다.
+            cur = (fmt_screens(screens) if screen == SCREEN_ALL
+                   else str(screens.get(screen, "0")))
             counts = state.setdefault("screen_counts", {})
             prev = counts.get(tid)
             key = screen_key(site_no, screen, cur)
             baselined.add(tid)
             if key in seen:
                 counts[tid] = cur
-                log("  {}: {} -> {}편 (알린 적 있음)".format(label, why, cur))
+                log("  {}: {} -> {} (알린 적 있음)".format(
+                    label, why, _fmt_count(cur)))
                 continue
             if (first_run or new_target) and not cfg.get("notify_on_first_run", False):
-                log("    {}이라 {}편을 기준선으로만 저장".format(
-                    "첫 실행" if first_run else "새 대상", cur))
+                log("    {}이라 '{}' 을 기준선으로만 저장".format(
+                    "첫 실행" if first_run else "새 대상", _fmt_count(cur)))
                 seen.add(key)
                 counts[tid] = cur
                 continue
-            log("  {}: {} -> {}편 -> {}편".format(label, why, prev, cur))
+            log("  {}: {} -> {} -> {}".format(
+                label, why, _fmt_count(prev), _fmt_count(cur)))
             # 여기서는 편수를 갱신하지 않는다. 갱신은 그 편수를 '알린
             # 것으로 인정'했을 때(= seen 에 들어갔을 때)만 위 가지에서
             # 한다. 지금 갱신해버리면 전송이 실패해 다시 보낼 때

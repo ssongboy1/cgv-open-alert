@@ -1149,6 +1149,68 @@ def test_two_date_targets(fake):
     check("두 번 알리지 않는다", not msgs, msgs)
 
 
+def test_all_screens_watch(fake):
+    """특별관 전체를 한 덩어리로 보는 감시. 아이맥스 숫자만으로는 놓친다."""
+    print("\n[26] 특별관 전체 감시")
+    fake.reset()
+
+    alls = {"site_no": "0345", "site_nm": "대구",
+            "screen": "ALL", "notify": "screen"}
+    imax = {"site_no": "0345", "site_nm": "대구",
+            "screen": "아이맥스", "notify": "screen"}
+
+    check("전체 감시와 아이맥스 감시는 다른 대상",
+          watcher.target_id(alls) != watcher.target_id(imax))
+    check("설명이 구분된다",
+          watcher.describe(alls) == "대구 특별관 전체"
+          and watcher.describe(imax) == "대구 아이맥스 편수",
+          (watcher.describe(alls), watcher.describe(imax)))
+
+    # 아이맥스 1편, 4DX 1편으로 시작
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800"),
+        row("0345", "M2", "코난", D1, "1000", grade="4DX", fmt="4DX 2D")])
+    cfg = config(alls, imax)
+    state = fresh_state()
+    msgs, state = run(cfg, state)
+    check("첫 실행은 둘 다 기준선만", not msgs, msgs)
+
+    # 4DX 에만 영화가 는다. 아이맥스는 그대로.
+    fake.set("0345", D2, [
+        row("0345", "M3", "스파이더맨", D2, "1500", grade="4DX", fmt="4DX 2D")])
+    msgs, state = run(cfg, state)
+    check("4DX 만 바뀌면 전체 감시만 알린다  <- 아이맥스 감시는 조용",
+          len(msgs) == 1, [m[0][:40] for m in msgs])
+    check("알림에 바뀐 현황이 들어간다",
+          msgs and "4DX" in msgs[0][0] and "아이맥스" in msgs[0][0],
+          msgs and msgs[0][0])
+
+    # 아이맥스에 새 영화가 들어온다: 둘 다 알린다
+    fake.set("0345", D2, fake.data["0345"][D2] + [
+        row("0345", "M4", "듄", D2, "1900")])
+    msgs, state = run(cfg, state)
+    check("아이맥스가 늘면 둘 다 알린다", len(msgs) == 2,
+          [m[0][:40] for m in msgs])
+
+    msgs, state = run(cfg, state)
+    check("두 번 알리지 않는다", not msgs, msgs)
+
+    # 빈 응답은 전체 감시에서도 건너뛴다
+    saved = cgv_api.get_special_screens
+    cgv_api.get_special_screens = lambda site: []
+    try:
+        msgs, state = run(cfg, state)
+        check("빈 응답이면 전체 감시도 건너뛴다  <- '(없음)' 으로 알리면 안 된다",
+              not msgs, msgs)
+    finally:
+        cgv_api.get_special_screens = saved
+
+    check("현황 한 줄 만들기",
+          watcher.fmt_screens({"아이맥스": "2", "4DX": "9"})
+          == "4DX 9편, 아이맥스 2편",
+          watcher.fmt_screens({"아이맥스": "2", "4DX": "9"}))
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1176,6 +1238,7 @@ def main():
         test_screen_watch(fake)
         test_empty_screen_response(fake)
         test_two_date_targets(fake)
+        test_all_screens_watch(fake)
     finally:
         fake.restore()
 
