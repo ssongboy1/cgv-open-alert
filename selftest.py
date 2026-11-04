@@ -1211,6 +1211,61 @@ def test_all_screens_watch(fake):
           watcher.fmt_screens({"아이맥스": "2", "4DX": "9"}))
 
 
+def test_screen_failure_spares_dates(fake):
+    """특별관이 403 이어도 같은 지점의 날짜 감시는 살아 있어야 한다.
+
+    실제로 터졌던 회귀다. 대구에 특별관 감시를 붙이자 게이트가
+    '특별관 + 날짜' 를 한 덩어리로 받게 됐는데, 특별관만 403 이 나면서
+    지점 전체가 건너뛰어졌다. 멀쩡히 되는 듄3 12/16 감시까지 죽었다.
+    """
+    print("\n[27] 특별관 403 이 날짜 감시를 죽이면 안 된다")
+    fake.reset()
+
+    aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
+             "watch_date": "20261216"}
+    alls = {"site_no": "0345", "site_nm": "대구",
+            "screen": "ALL", "notify": "screen"}
+
+    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+
+    saved = cgv_api.get_special_screens
+    cgv_api.get_special_screens = lambda site: (_ for _ in ()).throw(
+        cgv_api.CloudflareBlocked("403 Forbidden: 특별관"))
+    try:
+        cfg = config(aimed, alls)
+        state = fresh_state()
+        msgs, state = run(cfg, state)
+
+        check("특별관이 403 이어도 예외가 올라오지 않는다", True)
+        check("날짜 감시는 기준선을 잡는다  <- 이게 안 되면 12/16 을 놓친다",
+              watcher.target_id(aimed) in state["baselined"],
+              state["baselined"])
+        check("특별관 감시는 기준선을 안 잡는다  <- 아직 못 읽었으니까",
+              watcher.target_id(alls) not in state["baselined"],
+              state["baselined"])
+        check("날짜는 게이트에 제대로 들어왔다",
+              state["gates"]["0345"]["dates"] == ["20261104"],
+              state["gates"]["0345"])
+        check("특별관은 '모름'으로 남는다",
+              state["gates"]["0345"]["screens"] is None,
+              state["gates"]["0345"]["screens"])
+
+        # 특별관이 계속 막혀 있어도 12/16 이 열리면 알린다
+        fake.set("0345", "20261216", [])
+        msgs, state = run(cfg, state)
+        check("특별관이 막힌 채로도 12/16 열리면 알린다  <- 핵심",
+              len(msgs) == 1 and "12/16" in msgs[0][0],
+              [m[0][:40] for m in msgs])
+    finally:
+        cgv_api.get_special_screens = saved
+
+    # 특별관이 돌아오면 그때 기준선을 잡는다
+    msgs, state = run(cfg, state)
+    check("특별관이 돌아오면 그때 기준선을 잡는다",
+          watcher.target_id(alls) in state["baselined"], state["baselined"])
+    check("돌아온 것만으로 알리지는 않는다", not msgs, msgs)
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1239,6 +1294,7 @@ def main():
         test_empty_screen_response(fake)
         test_two_date_targets(fake)
         test_all_screens_watch(fake)
+        test_screen_failure_spares_dates(fake)
     finally:
         fake.restore()
 

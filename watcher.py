@@ -660,9 +660,12 @@ def run_once(cfg, state, dry_run=False):
             # 특별관 조회가 간헐적으로 빈 응답을 준다 (403 과는 별개로
             # 빈 배열이 온다). 그걸 '0편'으로 읽으면 1편 -> 0편 -> 1편 으로
             # 요동치며 헛알림이 나간다. 모르는 것은 모르는 대로 둔다.
-            screens = snap.get("screens") or {}
+            # None 은 '조회가 막혀서 모름', {} 는 '빈 응답'. 둘 다 모르는
+            # 것이므로 건너뛴다. 0편으로 읽으면 헛알림이 나간다.
+            screens = snap.get("screens")
             if not screens:
-                log("  {}: 특별관 응답이 비어 있음 — 이번은 건너뜁니다".format(label))
+                log("  {}: 특별관을 못 읽음({}) — 이번은 건너뜁니다".format(
+                    label, "차단" if screens is None else "빈 응답"))
                 continue
             # screen 이 ALL 이면 특별관 전체를 한 덩어리로 본다. 어느
             # 상영관이든 편수가 달라지면 알린다. 아이맥스관에 비아이맥스

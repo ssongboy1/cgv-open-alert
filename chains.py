@@ -58,9 +58,17 @@ def gate(site, dates_only=False):
     # 날짜에 4DX 로 새 영화가 끼어드는 것을 게이트가 못 잡아서, 정기 전체
     # 스캔(기본 30회마다) 때까지 알림이 늦었다. 버리지 말고 전부 본다.
     # 요청 수는 그대로다. (일반관은 이 목록에 없어서 여전히 전체 스캔 몫)
-    screens = {s["comCdvalNm"]: str(s.get("schdCnt", "0"))
-               for s in cgv_api.get_special_screens(site)
-               if s.get("comCdvalNm")}
+    # 특별관 조회와 열린날짜 조회는 각각 따로 실패한다. 실제로 특별관
+    # 쪽만 403 이 나는 일이 잦다. 둘을 한 덩어리로 묶어 같이 죽이면,
+    # 멀쩡히 되는 날짜 감시(듄3 12/16)까지 그 지점에서 통째로 멈춘다.
+    # 그래서 특별관 실패는 '모름'(None)으로 삼키고 날짜는 살린다.
+    # 날짜 조회가 실패하면 그건 그대로 올린다. 그 지점은 볼 게 없다.
+    try:
+        screens = {s["comCdvalNm"]: str(s.get("schdCnt", "0"))
+                   for s in cgv_api.get_special_screens(site)
+                   if s.get("comCdvalNm")}
+    except cgv_api.CloudflareBlocked:
+        screens = None
     return {
         "screens": screens,
         "dates": cgv_api.get_open_dates(site),
