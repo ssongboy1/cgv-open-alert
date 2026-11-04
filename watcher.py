@@ -180,10 +180,18 @@ def watch_dates_of(target):
 
 
 def target_id(target):
-    """감시 대상 하나를 식별하는 값. 기준선을 잡았는지 기록하는 데 쓴다."""
-    return "{}|{}|{}|{}".format(
+    """감시 대상 하나를 식별하는 값. 기준선을 잡았는지 기록하는 데 쓴다.
+
+    날짜 감시는 노리는 날짜까지 넣어야 한다. 안 그러면 같은 지점에
+    '12/16 열리면' 과 '새 날짜 아무거나' 를 같이 걸 수 없다. 둘의 id 가
+    같아서 한쪽이 기준선을 잡으면 다른 쪽도 잡은 것으로 쳐버린다.
+    """
+    base = "{}|{}|{}|{}".format(
         target["site_no"], screen_of(target),
         normalize(target.get("movie_keyword", "")), granularity_of(target))
+    if granularity_of(target) == "date":
+        base += "|" + ",".join(sorted(watch_dates_of(target)))
+    return base
 
 
 def describe(target):

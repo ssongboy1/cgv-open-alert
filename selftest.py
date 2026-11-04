@@ -1106,6 +1106,49 @@ def test_empty_screen_response(fake):
     check("진짜로 늘면 그때는 알린다", len(msgs) == 1, msgs)
 
 
+def test_two_date_targets(fake):
+    """같은 지점에 '그 날짜' 감시와 '새 날짜 아무거나' 감시를 같이 건다."""
+    print("\n[25] 한 지점에 날짜 감시 두 개")
+    fake.reset()
+
+    aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
+             "watch_date": "20261216", "movie_keyword": "듄"}
+    anyd = {"site_no": "0345", "site_nm": "대구", "notify": "date",
+            "movie_keyword": "듄"}
+
+    check("둘의 id 가 다르다  <- 같으면 한쪽만 동작한다",
+          watcher.target_id(aimed) != watcher.target_id(anyd),
+          (watcher.target_id(aimed), watcher.target_id(anyd)))
+    check("노리는 날짜가 id 에 들어간다",
+          "20261216" in watcher.target_id(aimed), watcher.target_id(aimed))
+
+    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    cfg = config(aimed, anyd)
+    state = fresh_state()
+    msgs, state = run(cfg, state)
+    check("첫 실행에는 둘 다 조용하다", not msgs, msgs)
+    check("둘 다 기준선을 잡는다",
+          len(state["baselined"]) == 2, state["baselined"])
+
+    # 정규 시간표가 풀려 새 날짜가 생긴다 (12/16 은 아직 아님)
+    fake.set("0345", "20261112", [])
+    msgs, state = run(cfg, state)
+    check("새 날짜가 열리면 '아무거나' 쪽이 알린다", len(msgs) == 1, msgs)
+    check("그 알림은 새로 생긴 날짜다",
+          msgs and "11/12" in msgs[0][0], msgs and msgs[0][0])
+
+    # 드디어 12/16 이 열린다
+    fake.set("0345", "20261216", [])
+    msgs, state = run(cfg, state)
+    check("12/16 이 열리면 두 대상이 각각 알린다  <- 노린 쪽과 아무거나 쪽",
+          len(msgs) == 2, [m[0][:30] for m in msgs])
+    check("둘 다 12/16 을 가리킨다",
+          all("12/16" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+
+    msgs, state = run(cfg, state)
+    check("두 번 알리지 않는다", not msgs, msgs)
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1132,6 +1175,7 @@ def main():
         test_block_isolation(fake)
         test_screen_watch(fake)
         test_empty_screen_response(fake)
+        test_two_date_targets(fake)
     finally:
         fake.restore()
 

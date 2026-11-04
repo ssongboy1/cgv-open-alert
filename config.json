@@ -30,6 +30,12 @@
       "site_nm": "울산삼산",
       "notify": "date",
       "watch_date": "20261216"
+    },
+    {
+      "site_no": "0345",
+      "site_nm": "대구",
+      "notify": "date",
+      "movie_keyword": "듄"
     }
   ],
   "notify_on_first_run": false,
