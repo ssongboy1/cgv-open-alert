@@ -1266,6 +1266,82 @@ def test_screen_failure_spares_dates(fake):
     check("돌아온 것만으로 알리지는 않는다", not msgs, msgs)
 
 
+def test_listing_watch(fake):
+    """전국 예매 목록에 그 영화가 뜨는지 본다. CGV 에서 제목을 보는 유일한 길."""
+    print("\n[28] 예매 목록 감시 (제목으로 확인)")
+    fake.reset()
+
+    def mov(no, nm, rate="0.00"):
+        return {"movNo": no, "movNm": nm, "atktRate": rate}
+
+    listing = {"notify": "listing", "movie_keyword": "듄"}
+
+    check("notify=listing 은 단위가 listing",
+          watcher.granularity_of(listing) == "listing")
+    check("지점 없이도 id 가 만들어진다",
+          watcher.target_id(listing).startswith("CGV|"),
+          watcher.target_id(listing))
+    check("설명이 읽힌다",
+          watcher.describe(listing) == "CGV 예매 목록에 '듄' 뜨면",
+          watcher.describe(listing))
+
+    saved = cgv_api.get_now_playing
+    # 지금은 듄 1편만 올라와 있다 (실측과 같은 상황)
+    now = [mov("30001342", "타짜-벨제붑의 노래", "8.1"),
+           mov("30000111", "듄", "2.94")]
+    cgv_api.get_now_playing = lambda: list(now)
+    try:
+        cfg = config(listing)
+        state = fresh_state()
+        msgs, state = run(cfg, state)
+        check("이미 올라와 있던 '듄' 은 알리지 않는다  <- 기준선", not msgs, msgs)
+        check("기준선으로 저장된다",
+              watcher.listing_key("30000111", "듄") in state["seen"],
+              state["seen"])
+
+        msgs, state = run(cfg, state)
+        check("변화 없으면 조용하다", not msgs, msgs)
+
+        # 듄: 파트 3 가 목록에 올라온다 = CGV 예매가 열렸다
+        now.append(mov("30009999", "듄: 파트 3", "0.00"))
+        msgs, state = run(cfg, state)
+        check("듄: 파트 3 가 올라오면 알린다", len(msgs) == 1, msgs)
+        check("알림에 제목이 들어간다",
+              msgs and "듄: 파트 3" in msgs[0][0], msgs and msgs[0][0])
+        check("예매 버튼이 붙는다", msgs and msgs[0][2], msgs and msgs[0][2])
+
+        msgs, state = run(cfg, state)
+        check("두 번 알리지 않는다", not msgs, msgs)
+
+        # 상관없는 영화는 무시한다
+        now.append(mov("30008888", "아바타-파이어 앤 애쉬", "5.0"))
+        msgs, state = run(cfg, state)
+        check("찾는 영화가 아니면 조용하다", not msgs, msgs)
+
+        # 403 이어도 다른 감시는 돈다
+        cgv_api.get_now_playing = lambda: (_ for _ in ()).throw(
+            cgv_api.CloudflareBlocked("403 Forbidden: 예매목록"))
+        fake.set("MB7011", D1, [])
+        mb = {"site_no": "MB7011", "site_nm": "동대구", "screen": "ALL",
+              "movie_keyword": "듄", "notify": "schedule"}
+        saved_mb = (megabox_api.get_gate, megabox_api.get_schedules)
+        megabox_api.get_gate = lambda site: {"screens": {}, "dates": [D1]}
+        megabox_api.get_schedules = lambda site, ymd: [
+            row("MB7011", "D9", "듄: 파트 3", D1, "1900")]
+        try:
+            cfg2 = config(listing, mb)
+            st = dict(fresh_state(), initialized=True,
+                      baselined=[watcher.target_id(mb)])
+            msgs, st = watcher.run_once(cfg2, st, dry_run=True)
+            check("예매 목록이 403 이어도 메가박스 알림은 나간다",
+                  any("듄" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+            check("차단 기록이 남는다", st.get("blocked") is True)
+        finally:
+            megabox_api.get_gate, megabox_api.get_schedules = saved_mb
+    finally:
+        cgv_api.get_now_playing = saved
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1295,6 +1371,7 @@ def main():
         test_two_date_targets(fake)
         test_all_screens_watch(fake)
         test_screen_failure_spares_dates(fake)
+        test_listing_watch(fake)
     finally:
         fake.restore()
 
