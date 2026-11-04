@@ -34,6 +34,12 @@
       "notify": "date",
       "watch_date": "20261216",
       "movie_keyword": "듄"
+    },
+    {
+      "site_no": "0345",
+      "site_nm": "대구",
+      "notify": "date",
+      "movie_keyword": "듄"
     }
   ],
   "notify_on_first_run": false,
