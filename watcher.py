@@ -628,7 +628,14 @@ def run_once(cfg, state, dry_run=False):
                "게이트 변화" if changed else "정기 전체 스캔")
         # 특별관 편수 감시. 게이트에 이미 들어 있는 값이라 추가 요청이 없다.
         if unit == "screen":
-            cur = str(snap.get("screens", {}).get(screen, "0"))
+            # 특별관 조회가 간헐적으로 빈 응답을 준다 (403 과는 별개로
+            # 빈 배열이 온다). 그걸 '0편'으로 읽으면 1편 -> 0편 -> 1편 으로
+            # 요동치며 헛알림이 나간다. 모르는 것은 모르는 대로 둔다.
+            screens = snap.get("screens") or {}
+            if not screens:
+                log("  {}: 특별관 응답이 비어 있음 — 이번은 건너뜁니다".format(label))
+                continue
+            cur = str(screens.get(screen, "0"))
             counts = state.setdefault("screen_counts", {})
             prev = counts.get(tid)
             key = screen_key(site_no, screen, cur)

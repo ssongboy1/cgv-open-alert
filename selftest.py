@@ -1069,6 +1069,43 @@ def test_screen_watch(fake):
           (fake.gate_calls, fake.schedule_calls))
 
 
+def test_empty_screen_response(fake):
+    """특별관 조회가 빈 응답일 때 '0편' 으로 읽으면 헛알림이 간다."""
+    print("\n[23] 특별관 빈 응답")
+    fake.reset()
+    scr = {"site_no": "0345", "site_nm": "대구",
+           "screen": "아이맥스", "notify": "screen"}
+
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+    cfg = config(scr)
+    state = fresh_state()
+    _msgs, state = run(cfg, state)
+    check("기준선: 아이맥스 1편",
+          watcher.screen_key("0345", "아이맥스", "1") in state["seen"],
+          state["seen"])
+
+    # CGV 가 특별관 목록을 빈 배열로 준다. 라이브에서 실제로 일어났다.
+    saved = cgv_api.get_special_screens
+    cgv_api.get_special_screens = lambda site: []
+    try:
+        msgs, state = run(cfg, state)
+        check("빈 응답을 0편으로 읽지 않는다  <- 읽으면 헛알림이 간다",
+              not msgs, msgs)
+        check("빈 응답일 때 0편 기록을 남기지 않는다",
+              watcher.screen_key("0345", "아이맥스", "0") not in state["seen"],
+              state["seen"])
+    finally:
+        cgv_api.get_special_screens = saved
+
+    msgs, state = run(cfg, state)
+    check("응답이 돌아오면 다시 조용하다  <- 복귀가 변화로 보이면 안 된다",
+          not msgs, msgs)
+
+    fake.set("0345", D2, [row("0345", "M2", "듄", D2, "1900")])
+    msgs, state = run(cfg, state)
+    check("진짜로 늘면 그때는 알린다", len(msgs) == 1, msgs)
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1094,6 +1131,7 @@ def main():
         test_date_watch(fake)
         test_block_isolation(fake)
         test_screen_watch(fake)
+        test_empty_screen_response(fake)
     finally:
         fake.restore()
 
