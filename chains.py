@@ -39,14 +39,20 @@ def label(site):
     return "메가박스" if is_megabox(site) else "CGV"
 
 
-def gate(site):
+def gate(site, dates_only=False):
     """지점당 최소 요청으로 '변화 있었나'를 볼 값.
 
     값이 달라졌을 때만 상세 시간표를 조회한다. 극장사마다 모양이 다르지만
     watcher 는 같은지 다른지만 보므로 상관없다.
+
+    dates_only 는 '열린 날짜만 보면 되는 지점'을 위한 것이다. CGV 는 평소
+    특별관 현황과 열린 날짜를 각각 1건씩 조회하는데, 날짜만 감시하는
+    지점이면 앞쪽은 필요 없다. 요청이 2건에서 1건으로 줄어든다.
     """
     if is_megabox(site):
         return megabox_api.get_gate(code(site))
+    if dates_only:
+        return {"screens": {}, "dates": cgv_api.get_open_dates(site)}
     # 특별관 현황 요청 하나에 아이맥스·4DX·SCREENX 편수가 전부 담겨 온다.
     # 예전에는 아이맥스만 꺼내 쓰고 나머지를 버렸다. 그러면 이미 열린
     # 날짜에 4DX 로 새 영화가 끼어드는 것을 게이트가 못 잡아서, 정기 전체

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import time
 from datetime import datetime, timedelta
 
 import cgv_api
@@ -531,11 +532,24 @@ def test_block_recovery(fake):
         check("복구 알림은 한 번만 보낸다",
               not any("정상으로 돌아왔습니다" in t for t in sent), sent)
 
+        # 복구 알림 전송이 실패했을 때. 재시도 신호는 blocked 가 아니라
+        # blocked_at 이다. run_once 가 정상 복귀 시 blocked 를 내리기 때문에
+        # (그래야 지점별 403 격리가 성립한다) blocked 로 걸 수 없다.
         notifier.send = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("전송 실패"))
         watcher.mark_blocked()
         watcher.cycle(cfg, dry_run=False)
-        check("복구 알림 전송이 실패하면 기록을 남겨 다음에 다시 시도한다",
-              watcher.load_state().get("blocked") is True)
+        check("복구 알림 전송이 실패하면 기록을 남긴다",
+              watcher.load_state().get("blocked_at") is not None,
+              watcher.load_state().get("blocked_at"))
+
+        # 약속은 '기록을 남긴다'가 아니라 '다음에 다시 보낸다'다. 그걸 직접 본다.
+        sent.clear()
+        notifier.send = lambda text, **kw: sent.append(text)
+        watcher.cycle(cfg, dry_run=False)
+        check("전송이 실패했으면 다음 실행에서 복구 알림을 다시 보낸다",
+              any("정상으로 돌아왔습니다" in t for t in sent), sent)
+        check("다시 보냈으면 그때 기록을 지운다",
+              watcher.load_state().get("blocked_at") is None)
     finally:
         watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
 
@@ -818,6 +832,165 @@ def test_live():
         check("텔레그램", False, exc)
 
 
+def test_date_watch(fake):
+    """막힌 시간표를 건드리지 않고 '그 날짜가 열렸나'만 보는 감시."""
+    print("\n[20] 예매일 감시 (CGV 시간표 403 우회 아님 — 안 쓰는 것)")
+    fake.reset()
+
+    def date_target(site="0345", nm="대구", when="20261216"):
+        t = {"site_no": site, "site_nm": nm, "notify": "date"}
+        if when is not None:
+            t["watch_date"] = when
+        return t
+
+    # --- 단위 판정
+    check("notify=date 는 알림 단위가 date",
+          watcher.granularity_of(date_target()) == "date")
+    check("예전 설정은 그대로 schedule/movie",
+          (watcher.granularity_of(target()) == "schedule"
+           and watcher.granularity_of(target(notify="movie")) == "movie"))
+    check("watch_date 를 하나만 적어도 목록으로 읽는다",
+          watcher.watch_dates_of(date_target(when="20261216")) == {"20261216"})
+    check("watch_date 를 안 적으면 '날짜 전부'",
+          watcher.watch_dates_of(date_target(when=None)) == set())
+
+    # --- 노리는 날짜가 아직 안 열렸을 때
+    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    cfg = config(date_target())
+    state = fresh_state()
+    msgs, state = run(cfg, state)
+    check("노리는 날짜가 없으면 알리지 않는다", not msgs, msgs)
+    check("그래도 기준선은 잡는다  <- 안 잡으면 열리는 순간을 놓친다",
+          watcher.target_id(cfg["targets"][0]) in state["baselined"])
+
+    # --- 그 날짜가 열리는 순간
+    before = fake.schedule_calls
+    fake.set("0345", "20261216", [])
+    msgs, state = run(cfg, state)
+    check("노리는 날짜가 열리면 알린다", len(msgs) == 1, msgs)
+    check("알림에 그 날짜가 들어간다",
+          msgs and "12/16" in msgs[0][0], msgs and msgs[0][0])
+    check("예매 버튼이 붙는다", msgs and msgs[0][2], msgs and msgs[0][2])
+    check("시간표는 한 번도 조회하지 않는다  <- 403 인 주소다",
+          fake.schedule_calls == before, fake.schedule_calls - before)
+
+    # --- 두 번 알리지 않는다
+    msgs, state = run(cfg, state)
+    check("같은 날짜를 두 번 알리지 않는다", not msgs, msgs)
+
+    # --- 새로 등록하면 이미 열린 날짜는 알리지 않는다
+    state2 = dict(fresh_state(), initialized=True)
+    msgs, state2 = run(config(date_target()), state2)
+    check("새 대상은 이미 열려 있던 날짜를 알리지 않는다", not msgs, msgs)
+    check("대신 기준선으로 저장한다",
+          watcher.date_key("0345", "20261216") in state2["seen"])
+
+    # --- 날짜를 안 적으면 새로 열리는 날짜 전부
+    cfg_all = config(date_target(when=None))
+    state3 = dict(fresh_state(), initialized=True,
+                  baselined=[watcher.target_id(cfg_all["targets"][0])],
+                  seen=[watcher.date_key("0345", "20261104"),
+                        watcher.date_key("0345", "20261216")])
+    fake.set("0345", "20261229", [])
+    msgs, state3 = run(cfg_all, state3)
+    check("watch_date 가 없으면 새로 열린 날짜를 알린다", len(msgs) == 1, msgs)
+    check("그 알림은 새로 생긴 날짜다",
+          msgs and "12/29" in msgs[0][0], msgs and msgs[0][0])
+
+    # --- 요청 수: 날짜만 보는 지점은 특별관 현황을 조회하지 않는다
+    fake.gate_calls = 0
+    run(config(date_target()), dict(fresh_state(), initialized=True))
+    check("날짜만 보는 지점은 특별관 현황을 조회하지 않는다  <- 요청 1건",
+          fake.gate_calls == 0, fake.gate_calls)
+
+    fake.gate_calls = 0
+    run(config(date_target(), target()), dict(fresh_state(), initialized=True))
+    check("같은 지점에 회차 감시도 있으면 특별관 현황을 조회한다",
+          fake.gate_calls == 1, fake.gate_calls)
+
+    # --- 오래된 예매일 키는 버린다
+    old = (datetime.now(watcher.KST) - timedelta(days=5)).strftime("%Y%m%d")
+    keep = (datetime.now(watcher.KST) + timedelta(days=5)).strftime("%Y%m%d")
+    kept = watcher.prune_seen({watcher.date_key("0345", old),
+                               watcher.date_key("0345", keep)})
+    check("지난 예매일 키는 버린다  <- 안 버리면 state.json 이 계속 큰다",
+          watcher.date_key("0345", old) not in kept, sorted(kept))
+    check("아직 안 지난 예매일 키는 남긴다",
+          watcher.date_key("0345", keep) in kept, sorted(kept))
+
+
+def test_block_isolation(fake):
+    """한 극장사가 403 이어도 다른 극장사 감시는 계속 돈다."""
+    print("\n[21] 지점별 403 격리")
+    fake.reset()
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+
+    boom = cgv_api.CloudflareBlocked("403 Forbidden: 테스트")
+    saved = cgv_api.get_open_dates
+
+    def blocked_dates(site):
+        raise boom
+
+    # CGV 는 막혔고 메가박스 대상은 정상인 상황
+    mb = {"site_no": "MB7011", "site_nm": "동대구", "screen": "ALL",
+          "movie_keyword": "듄", "notify": "schedule"}
+    saved_mb = (megabox_api.get_gate, megabox_api.get_schedules)
+    mb_calls = []
+    megabox_api.get_gate = lambda site: (mb_calls.append(site) or
+                                         {"screens": {}, "dates": [D1]})
+    megabox_api.get_schedules = lambda site, ymd: [
+        row("MB7011", "D1", "듄: 파트3", D1, "1900")]
+    cgv_api.get_open_dates = blocked_dates
+    try:
+        cfg = config(target(), mb)
+        # CGV 대상은 '새로 등록된' 상태로 둔다. 막힌 대상이 기준선을 잡은
+        # 것으로 기록되면, 나중에 403 이 풀렸을 때 그동안 열려 있던 회차를
+        # 전부 새것으로 알리게 된다. 그걸 보려면 새 대상이어야 한다.
+        state = dict(fresh_state(), initialized=True,
+                     baselined=[watcher.target_id(mb)])
+        msgs, state = watcher.run_once(cfg, state, dry_run=True)
+
+        check("CGV 가 403 이어도 예외가 올라오지 않는다  <- 예전엔 사이클이 죽었다",
+              True)
+        check("메가박스 게이트는 그대로 조회됐다", mb_calls == ["7011"], mb_calls)
+        check("메가박스 알림은 정상으로 나온다",
+              any("듄" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+        check("403 경고도 함께 온다",
+              any("403" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+        check("차단 기록이 state 에 남는다", state.get("blocked") is True)
+
+        # 막힌 대상은 기준선을 '잡았다'고 기록하면 안 된다. 그러면 다음에
+        # 풀렸을 때 지금 열려 있는 회차를 몽땅 새것으로 알린다.
+        check("막힌 새 대상은 기준선을 잡은 것으로 기록하지 않는다"
+              "  <- 기록하면 풀릴 때 몽땅 알린다",
+              watcher.target_id(target()) not in state["baselined"],
+              state["baselined"])
+        check("막히지 않은 대상의 기준선은 그대로 남는다",
+              watcher.target_id(mb) in state["baselined"], state["baselined"])
+
+        # 경고 간격
+        state["last_block_warn"] = time.time()
+        msgs2, state = watcher.run_once(cfg, state, dry_run=True)
+        check("403 경고는 설정한 간격에 한 번만 보낸다",
+              not any("403" in m[0] for m in msgs2),
+              [m[0][:40] for m in msgs2])
+
+        check("기본 경고 간격은 24시간", watcher.block_warn_hours({}) == 24)
+        check("설정으로 간격을 바꿀 수 있다",
+              watcher.block_warn_hours({"block_warn_hours": 1}) == 1)
+    finally:
+        cgv_api.get_open_dates = saved
+        megabox_api.get_gate, megabox_api.get_schedules = saved_mb
+
+    # 모두 정상이면 차단 기록이 내려간다
+    cfg = config(target())
+    state = dict(fresh_state(), initialized=True, blocked=True,
+                 baselined=[watcher.target_id(cfg["targets"][0])])
+    _msgs, state = watcher.run_once(cfg, state, dry_run=True)
+    check("정상으로 돌아오면 차단 기록이 내려간다",
+          state.get("blocked") is False, state.get("blocked"))
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -840,6 +1013,8 @@ def main():
         test_add_flow()
         test_gate_width(fake)
         test_commit_noise(fake)
+        test_date_watch(fake)
+        test_block_isolation(fake)
     finally:
         fake.restore()
 
