@@ -119,9 +119,8 @@ def target(site="0345", nm="대구", screen="아이맥스", kw="오디세이",
 
 
 def config(*targets, **kw):
-    # 기본은 중계 끔. 켜면 테스트가 바깥 네트워크를 두드린다.
     cfg = {"targets": list(targets), "full_scan_every_minutes": 30,
-           "notify_on_first_run": False, "use_relay": False}
+           "notify_on_first_run": False}
     cfg.update(kw)
     return cfg
 
@@ -1070,70 +1069,9 @@ def test_screen_watch(fake):
           (fake.gate_calls, fake.schedule_calls))
 
 
-def test_relay_titles(fake):
-    """알림에 제목 붙이기. 중계가 죽어도 알림은 가야 한다."""
-    print("\n[23] 중계로 제목 붙이기")
-    fake.reset()
-    import relay
-
-    def scr():
-        return {"site_no": "0345", "site_nm": "대구", "screen": "아이맥스",
-                "notify": "screen", "movie_keyword": "듄"}
-
-    def dat():
-        return {"site_no": "0089", "site_nm": "센텀시티", "notify": "date",
-                "watch_date": D2, "movie_keyword": "듄"}
-
-    saved = relay.find_titles
-    calls = []
-    try:
-        # --- 중계가 제목을 준다
-        relay.find_titles = lambda site, dates, keyword=None, **kw: (
-            calls.append((site, list(dates), keyword))
-            or ({D2: ["듄", "명탐정 코난"]}, D2))
-
-        fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
-        cfg = config(scr(), use_relay=True)
-        state = fresh_state()
-        _msgs, state = run(cfg, state)            # 기준선
-        fake.set("0345", D2, [row("0345", "M2", "듄", D2, "1900")])
-        msgs, state = run(cfg, state)
-
-        check("편수 알림에 제목이 붙는다",
-              msgs and "듄" in msgs[0][0], msgs and msgs[0][0])
-        check("찾던 영화에 표시가 붙는다",
-              msgs and "찾던 영화" in msgs[0][0], msgs and msgs[0][0])
-        check("중계에 넘긴 지점과 키워드가 맞다",
-              calls and calls[-1][0] == "0345" and calls[-1][2] == "듄", calls)
-
-        # --- 중계가 죽어도 알림은 간다
-        relay.find_titles = lambda *a, **kw: (_ for _ in ()).throw(
-            RuntimeError("중계 죽음"))
-        fake.set("0345", D1, fake.data["0345"][D1] + [
-            row("0345", "M3", "아바타", D1, "2100")])
-        msgs, state = run(cfg, state)
-        check("중계가 죽어도 알림은 간다  <- 단일 장애점이면 안 된다",
-              len(msgs) == 1, msgs)
-        check("제목을 못 붙였다고 적는다",
-              msgs and "확인하지 못했습니다" in msgs[0][0], msgs and msgs[0][0])
-
-        # --- 중계를 끄면 아예 묻지 않는다
-        calls.clear()
-        relay.find_titles = lambda site, dates, keyword=None, **kw: (
-            calls.append(site) or ({}, None))
-        fake.set("0089", D2, [row("0089", "M9", "듄", D2, "2000")])
-        msgs, _st = run(config(dat(), use_relay=False),
-                        dict(fresh_state(), initialized=True,
-                             baselined=[watcher.target_id(dat())]))
-        check("use_relay 를 끄면 중계를 부르지 않는다", not calls, calls)
-        check("그래도 날짜 알림 자체는 나간다", len(msgs) == 1, msgs)
-    finally:
-        relay.find_titles = saved
-
-
 def test_empty_screen_response(fake):
     """특별관 조회가 빈 응답일 때 '0편' 으로 읽으면 헛알림이 간다."""
-    print("\n[24] 특별관 빈 응답")
+    print("\n[23] 특별관 빈 응답")
     fake.reset()
     scr = {"site_no": "0345", "site_nm": "대구",
            "screen": "아이맥스", "notify": "screen"}
@@ -1146,20 +1084,19 @@ def test_empty_screen_response(fake):
           watcher.screen_key("0345", "아이맥스", "1") in state["seen"],
           state["seen"])
 
-    # CGV 가 특별관 목록을 빈 배열로 준다 (403 과 별개로 실제로 일어난다)
+    # CGV 가 특별관 목록을 빈 배열로 준다. 라이브에서 실제로 일어났다.
     saved = cgv_api.get_special_screens
     cgv_api.get_special_screens = lambda site: []
     try:
         msgs, state = run(cfg, state)
         check("빈 응답을 0편으로 읽지 않는다  <- 읽으면 헛알림이 간다",
               not msgs, msgs)
-        check("빈 응답일 때 편수 기록을 덮어쓰지 않는다",
+        check("빈 응답일 때 0편 기록을 남기지 않는다",
               watcher.screen_key("0345", "아이맥스", "0") not in state["seen"],
               state["seen"])
     finally:
         cgv_api.get_special_screens = saved
 
-    # 돌아오면 정상 동작
     msgs, state = run(cfg, state)
     check("응답이 돌아오면 다시 조용하다  <- 복귀가 변화로 보이면 안 된다",
           not msgs, msgs)
@@ -1212,6 +1149,68 @@ def test_two_date_targets(fake):
     check("두 번 알리지 않는다", not msgs, msgs)
 
 
+def test_all_screens_watch(fake):
+    """특별관 전체를 한 덩어리로 보는 감시. 아이맥스 숫자만으로는 놓친다."""
+    print("\n[26] 특별관 전체 감시")
+    fake.reset()
+
+    alls = {"site_no": "0345", "site_nm": "대구",
+            "screen": "ALL", "notify": "screen"}
+    imax = {"site_no": "0345", "site_nm": "대구",
+            "screen": "아이맥스", "notify": "screen"}
+
+    check("전체 감시와 아이맥스 감시는 다른 대상",
+          watcher.target_id(alls) != watcher.target_id(imax))
+    check("설명이 구분된다",
+          watcher.describe(alls) == "대구 특별관 전체"
+          and watcher.describe(imax) == "대구 아이맥스 편수",
+          (watcher.describe(alls), watcher.describe(imax)))
+
+    # 아이맥스 1편, 4DX 1편으로 시작
+    fake.set("0345", D1, [
+        row("0345", "M1", "오디세이", D1, "0800"),
+        row("0345", "M2", "코난", D1, "1000", grade="4DX", fmt="4DX 2D")])
+    cfg = config(alls, imax)
+    state = fresh_state()
+    msgs, state = run(cfg, state)
+    check("첫 실행은 둘 다 기준선만", not msgs, msgs)
+
+    # 4DX 에만 영화가 는다. 아이맥스는 그대로.
+    fake.set("0345", D2, [
+        row("0345", "M3", "스파이더맨", D2, "1500", grade="4DX", fmt="4DX 2D")])
+    msgs, state = run(cfg, state)
+    check("4DX 만 바뀌면 전체 감시만 알린다  <- 아이맥스 감시는 조용",
+          len(msgs) == 1, [m[0][:40] for m in msgs])
+    check("알림에 바뀐 현황이 들어간다",
+          msgs and "4DX" in msgs[0][0] and "아이맥스" in msgs[0][0],
+          msgs and msgs[0][0])
+
+    # 아이맥스에 새 영화가 들어온다: 둘 다 알린다
+    fake.set("0345", D2, fake.data["0345"][D2] + [
+        row("0345", "M4", "듄", D2, "1900")])
+    msgs, state = run(cfg, state)
+    check("아이맥스가 늘면 둘 다 알린다", len(msgs) == 2,
+          [m[0][:40] for m in msgs])
+
+    msgs, state = run(cfg, state)
+    check("두 번 알리지 않는다", not msgs, msgs)
+
+    # 빈 응답은 전체 감시에서도 건너뛴다
+    saved = cgv_api.get_special_screens
+    cgv_api.get_special_screens = lambda site: []
+    try:
+        msgs, state = run(cfg, state)
+        check("빈 응답이면 전체 감시도 건너뛴다  <- '(없음)' 으로 알리면 안 된다",
+              not msgs, msgs)
+    finally:
+        cgv_api.get_special_screens = saved
+
+    check("현황 한 줄 만들기",
+          watcher.fmt_screens({"아이맥스": "2", "4DX": "9"})
+          == "4DX 9편, 아이맥스 2편",
+          watcher.fmt_screens({"아이맥스": "2", "4DX": "9"}))
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1237,9 +1236,9 @@ def main():
         test_date_watch(fake)
         test_block_isolation(fake)
         test_screen_watch(fake)
-        test_relay_titles(fake)
         test_empty_screen_response(fake)
         test_two_date_targets(fake)
+        test_all_screens_watch(fake)
     finally:
         fake.restore()
 
