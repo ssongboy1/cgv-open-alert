@@ -55,3 +55,41 @@ jobs:
 
       - name: 감시기 전체를 실제 CGV 로 1회 돌려보기 (알림 전송 없음)
         run: python watcher.py --dry-run
+
+      - name: 제목이 나오는 다른 주소도 살아있나 (1회용)
+        run: |
+          python - <<'PY'
+          import cgv_api
+
+          def tryit(label, fn):
+              try:
+                  return label, fn()
+              except Exception as e:
+                  print("{:34} 실패  {}: {}".format(
+                      label, type(e).__name__, str(e)[:120]))
+                  return label, None
+
+          # 1) 예매율/상영작 목록 — 제목이 들어 있다. 봇의 영화 확인에 쓰는 곳.
+          _l, playing = tryit("예매율/상영작 목록", cgv_api.get_now_playing)
+          if playing is not None:
+              print("예매율/상영작 목록                 OK    {}편".format(len(playing)))
+              print("  상위 8편:")
+              for m in playing[:8]:
+                  print("    {:<34} 예매율 {}".format(
+                      str(m.get("movNm"))[:34], m.get("atktRate")))
+              hits = [m for m in playing
+                      if "듄" in str(m.get("movNm"))
+                      or "DUNE" in str(m.get("movNm")).upper()]
+              print("  >>> 듄: {}".format(
+                  [(m.get("movNm"), m.get("atktRate")) for m in hits] or "목록에 없음"))
+
+          # 2) 특별관 현황의 schdCnt = 그 특별관에서 상영 중인 '영화 편수'
+          for site, nm in (("0345", "대구"), ("0013", "용산아이파크몰"),
+                           ("0088", "센텀시티")):
+              _l, rows = tryit("{} 특별관 편수".format(nm),
+                               lambda s=site: cgv_api.get_special_screens(s))
+              if rows is None:
+                  continue
+              got = {r.get("comCdvalNm"): r.get("schdCnt") for r in rows}
+              print("{:34} OK    {}".format(nm + " 특별관 편수", got))
+          PY
