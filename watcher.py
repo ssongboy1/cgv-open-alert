@@ -70,6 +70,9 @@ DEFAULT_CONFIG = {
     "targets": [],
     "full_scan_every_minutes": 30,
     "notify_on_first_run": False,
+    # 403 경고를 며칠에 한 번까지 보낼지. 막힌 지점을 건너뛰고 계속 도는
+    # 구조라, 같은 경고가 시간마다 오면 알림만 시끄럽고 할 일은 없다.
+    "block_warn_hours": 24,
     # CGV 예매 오픈은 주 단위 배치로 주간에 일어난다. 새벽에는 감속해서
     # 불필요한 요청을 줄인다 (그래도 완전히 멈추지는 않는다).
     "quiet_hours": {"start": 1, "end": 7, "slowdown": 10},
@@ -106,24 +109,41 @@ def save_state(state):
     tmp.replace(STATE_FILE)
 
 
-def mark_blocked():
-    """403 차단을 state 에 남기고, 경고를 보낼 차례인지 알려준다.
+def block_warn_hours(cfg):
+    """403 경고를 몇 시간에 한 번까지 보낼지."""
+    try:
+        return max(0.1, float(cfg.get("block_warn_hours", 24)))
+    except (TypeError, ValueError):
+        return 24.0
 
-    경고 자체는 1시간에 한 번만 보내지만 차단 사실은 매번 기록한다.
-    다음 실행이 정상으로 돌아오면 이 기록을 보고 복구 알림을 보낸다.
-    차단 알림만 오고 끝나면 감시가 아예 멈춘 건지 알 수 없기 때문이다.
+
+def note_blocked(cfg, state):
+    """403 차단을 건네받은 state 에 남기고, 경고 보낼 차례인지 알려준다.
+
+    경고는 간격을 두고 보내지만 차단 사실은 매번 기록한다. 다음 실행이
+    정상으로 돌아오면 이 기록을 보고 복구 알림을 보낸다. 차단 알림만
+    오고 끝나면 감시가 아예 멈춘 건지 알 수 없기 때문이다.
     """
     now = time.time()
-    try:
-        state = load_state()
-    except Exception:
-        return True
-    warn = now - float(state.get("last_block_warn", 0)) >= 3600
+    warn = now - float(state.get("last_block_warn", 0)) >= block_warn_hours(cfg) * 3600
     if warn:
         state["last_block_warn"] = now
     if not state.get("blocked"):
         state["blocked_at"] = datetime.now(KST).isoformat(timespec="seconds")
     state["blocked"] = True
+    return warn
+
+
+def mark_blocked(cfg=None):
+    """note_blocked 와 같지만 state 를 직접 읽고 쓴다.
+
+    대상 루프 밖에서 터진 차단(= state 를 손에 들고 있지 않은 자리)용이다.
+    """
+    try:
+        state = load_state()
+    except Exception:
+        return True
+    warn = note_blocked(cfg or {}, state)
     try:
         save_state(state)
     except Exception:
@@ -140,7 +160,23 @@ def screen_of(target):
 
 
 def granularity_of(target):
-    return "movie" if target.get("notify") == "movie" else "schedule"
+    """알림 단위. schedule=회차, movie=영화, date=예매 열린 날짜.
+
+    date 는 시간표를 전혀 조회하지 않는다. 열린 날짜 목록만 본다. CGV 의
+    시간표 주소가 403 으로 막혀 있어도 '그 날짜가 열렸나'는 알 수 있다.
+    """
+    notify = target.get("notify")
+    if notify == "date":
+        return "date"
+    return "movie" if notify == "movie" else "schedule"
+
+
+def watch_dates_of(target):
+    """date 대상이 노리는 날짜들. 비어 있으면 '새로 열리는 날짜 전부'."""
+    raw = target.get("watch_date") or target.get("watch_dates") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return {str(d) for d in raw}
 
 
 def target_id(target):
@@ -151,6 +187,12 @@ def target_id(target):
 
 
 def describe(target):
+    if granularity_of(target) == "date":
+        wanted = sorted(watch_dates_of(target))
+        what = ("/".join(fmt_date(d) for d in wanted) + " 열리면"
+                if wanted else "새 예매일")
+        return "{} ({})".format(
+            target.get("site_nm", target["site_no"]), what)
     screen = screen_of(target)
     screen_txt = "전 상영관" if screen == SCREEN_ALL else screen
     movie_txt = target.get("movie_keyword") or "전체 영화"
@@ -262,10 +304,17 @@ def movie_key(site_no, row):
     return "M|{}|{}".format(site_no, row.get("movNo"))
 
 
+def date_key(site_no, ymd):
+    """예매일 단위 키. 'D|' 로 시작해 다른 키와 구분한다."""
+    return "D|{}|{}".format(site_no, ymd)
+
+
 def prune_seen(seen, alive_movie_keys=None):
     """오래된 키를 버려 state.json 이 무한히 커지지 않게 한다.
 
     * 회차 키(5조각): 상영일자가 어제보다 이전이면 버린다.
+    * 예매일 키('D|'): 그 날짜가 어제보다 이전이면 버린다. 이 가지가 없으면
+      5조각도 'M|' 도 아니라서 영원히 안 지워지고 state.json 이 계속 큰다.
     * 영화 키('M|'): 그 지점을 이번에 전체 스캔했는데 더 이상 안 걸려 있으면 버린다.
       (스캔하지 않은 지점의 영화 키는 건드리지 않는다)
 
@@ -282,6 +331,11 @@ def prune_seen(seen, alive_movie_keys=None):
         if key.startswith("M|"):
             if alive_movie_keys is not None and parts[1] in scanned_sites \
                     and key not in alive_movie_keys:
+                continue
+            kept.add(key)
+            continue
+        if len(parts) == 3 and parts[0] == "D":
+            if parts[2] < cutoff:
                 continue
             kept.add(key)
             continue
@@ -337,6 +391,46 @@ def build_movie_message(site_nm, mov_nm, rows, site_no=""):
     ])
 
 
+def build_date_message(site_nm, ymd, site_no=""):
+    """'그 날짜 예매가 열렸다'는 알림.
+
+    시간표를 못 읽으니 영화 제목도 회차도 넣을 수 없다. 날짜와 예매
+    버튼만 준다. 그래도 '열렸다'는 사실이 제일 중요하다.
+    """
+    esc = html.escape
+    return "\n".join([
+        "\U0001F4C5 <b>{} 예매일이 열렸습니다!</b>".format(chains.label(site_no)),
+        "",
+        "  <b>{}</b>".format(esc(site_nm)),
+        "  <b>{}</b> 예매 시작".format(fmt_date(ymd)),
+        "",
+        "회차와 영화는 이 알림으로 알 수 없습니다 "
+        "(CGV 시간표 조회가 막혀 있습니다). 바로 들어가서 확인하세요.",
+        "",
+        esc(booking_url(site_no, site_nm)),
+    ])
+
+
+def build_blocked_message(blocked, cfg=None):
+    """일부 지점만 403 일 때의 경고. 나머지는 계속 돈다는 걸 분명히 한다."""
+    esc = html.escape
+    lines = ["\u26A0\uFE0F <b>일부 지점 조회가 403으로 막혔습니다.</b>", ""]
+    for site_no in sorted(blocked):
+        lines.append("  · {} {}".format(chains.label(site_no), esc(str(site_no))))
+    hours = block_warn_hours(cfg or {})
+    lines += [
+        "",
+        "막힌 지점만 건너뛰고 <b>나머지 감시는 그대로 돌아갑니다.</b> "
+        "다음 실행에서 자동으로 다시 시도하고, 풀리면 복구 알림을 보냅니다.",
+        "",
+        "이 경고는 {:g}시간에 한 번만 보냅니다.".format(hours),
+        "",
+        "<code>{}</code>".format(
+            esc(str(blocked[sorted(blocked)[0]])[:300])),
+    ]
+    return "\n".join(lines)
+
+
 def build_recovered_message(blocked_at):
     """403 차단에서 풀렸을 때 보내는 알림.
 
@@ -356,9 +450,9 @@ def build_recovered_message(blocked_at):
 
 # ---------------------------------------------------------------- 감시
 
-def gate_snapshot(site_no):
+def gate_snapshot(site_no, dates_only=False):
     """상세 스캔이 필요한지 판단하는 값. 극장사별 차이는 chains 가 흡수한다."""
-    return chains.gate(site_no)
+    return chains.gate(site_no, dates_only=dates_only)
 
 
 def scan_site(site_no, dates):
@@ -427,6 +521,7 @@ def run_once(cfg, state, dry_run=False):
     baselined = set(state.get("baselined", []))
     scanned = {}          # site_no -> 전체 회차 (지점당 1회만 조회)
     alive_movie_keys = set()
+    blocked = {}          # site_no -> 403 예외. 그 지점만 건너뛴다.
     messages = []
 
     if not cfg["targets"]:
@@ -440,6 +535,11 @@ def run_once(cfg, state, dry_run=False):
 
     # 대상이 있을 때만 판정한다. 대상이 없는데 기록을 남기면 '의미 있는
     # 변화'로 보여서 아무 일도 안 하면서 커밋만 하게 된다.
+    # 열린 날짜만 보는 지점은 특별관 현황을 조회할 필요가 없다. 그 지점을
+    # 보는 대상이 전부 날짜 감시면 게이트 요청이 2건에서 1건으로 줄어든다.
+    scan_sites = {t["site_no"] for t in cfg["targets"]
+                  if granularity_of(t) != "date"}
+
     force_scan = full_scan_due(cfg, state)
     if force_scan:
         state["last_full_scan"] = datetime.now(KST).isoformat(timespec="seconds")
@@ -459,10 +559,27 @@ def run_once(cfg, state, dry_run=False):
         tid = target_id(target)
         new_target = tid not in baselined
 
+        # 한 지점이 403 이어도 다른 지점 감시는 계속 돈다. 예전에는 403 이
+        # main() 까지 올라가 사이클 전체를 끝내서, CGV 가 막히면 메가박스
+        # 감시까지 같이 멈췄다.
+        if site_no in blocked:
+            log("  {}: 이 지점은 이번에 403 — 건너뜁니다".format(label))
+            continue
+
         # 게이트는 지점당 한 번만 조회한다. 같은 지점을 여러 대상이
         # 보고 있어도 요청이 늘지 않는다.
         if site_no not in new_gates:
-            new_gates[site_no] = gate_snapshot(site_no)
+            try:
+                new_gates[site_no] = gate_snapshot(
+                    site_no, dates_only=site_no not in scan_sites)
+            except chains.BLOCKED_ERRORS as exc:
+                blocked[site_no] = exc
+                # 예전 게이트 값을 그대로 물려준다. 지워버리면 다음 실행이
+                # '게이트 변화'로 오인해 쓸데없이 전체 스캔을 돈다.
+                if site_no in old_gates:
+                    new_gates[site_no] = old_gates[site_no]
+                log("  {}: 게이트 403 — 이 지점만 건너뜁니다".format(label))
+                continue
         snap = new_gates[site_no]
         changed = old_gates.get(site_no) != snap
 
@@ -473,8 +590,38 @@ def run_once(cfg, state, dry_run=False):
         why = ("새 대상 기준선" if new_target else
                "첫 실행" if first_run else
                "게이트 변화" if changed else "정기 전체 스캔")
+        # 날짜 감시는 여기서 끝난다. 시간표를 조회하지 않으므로 막힌
+        # 주소를 건드리지 않고, 추가 요청도 없다 (게이트에 날짜가 들어 있다).
+        if unit == "date":
+            wanted = watch_dates_of(target)
+            dates = [d for d in snap.get("dates", [])
+                     if not wanted or d in wanted]
+            fresh = {date_key(site_no, d): d for d in dates
+                     if date_key(site_no, d) not in seen}
+            # 0건이어도 기준선은 잡은 것으로 친다. 아직 안 열린 날짜를
+            # 노리는 게 바로 이 기능의 목적이다.
+            baselined.add(tid)
+            if not fresh:
+                log("  {}: {} -> 해당 날짜 없음".format(label, why))
+                continue
+            log("  {}: {} -> 새 예매일 {}건".format(label, why, len(fresh)))
+            if (first_run or new_target) and not cfg.get("notify_on_first_run", False):
+                log("    {}이라 {}건을 기준선으로만 저장".format(
+                    "첫 실행" if first_run else "새 대상", len(fresh)))
+                seen.update(fresh)
+                continue
+            for key, ymd in sorted(fresh.items(), key=lambda kv: kv[1]):
+                messages.append((build_date_message(site_nm, ymd, site_no),
+                                 [key], booking_button(site_no, site_nm)))
+            continue
+
         if site_no not in scanned:
-            scanned[site_no] = scan_site(site_no, snap["dates"])
+            try:
+                scanned[site_no] = scan_site(site_no, snap["dates"])
+            except chains.BLOCKED_ERRORS as exc:
+                blocked[site_no] = exc
+                log("  {}: 시간표 403 — 이 지점만 건너뜁니다".format(label))
+                continue
         all_rows = scanned[site_no]
         alive_movie_keys.update(movie_key(site_no, r) for r in all_rows)
 
@@ -530,6 +677,14 @@ def run_once(cfg, state, dry_run=False):
     # 설정에서 지워진 대상의 기록은 함께 버린다. 나중에 다시 추가하면
     # 그때 새 대상으로 보고 기준선을 다시 잡는 게 맞다.
     state["baselined"] = sorted(baselined & {target_id(t) for t in cfg["targets"]})
+    if blocked:
+        if note_blocked(cfg, state):
+            messages.append((build_blocked_message(blocked, cfg), [], None))
+        else:
+            log("  차단 경고는 최근에 이미 보냈으므로 생략")
+    else:
+        state["blocked"] = False
+
     state["seen"] = sorted(prune_seen(seen, alive_movie_keys or None))
     state["gates"] = new_gates
     state["initialized"] = True
@@ -620,7 +775,10 @@ def serve_until(cfg, seconds):
 def cycle(cfg, dry_run):
     state = load_state()
     was_first = not state.get("initialized", False)
-    blocked_at = state.get("blocked_at") if state.get("blocked") else None
+    # blocked 여부로 걸지 않는다. run_once 가 정상 복귀 시 blocked 를
+    # 내리므로, 그걸로 걸면 복구 알림 전송이 한 번 실패했을 때 다시 보낼
+    # 기회가 사라진다. blocked_at 은 전송에 성공했을 때만 지운다.
+    blocked_at = state.get("blocked_at")
 
     # 텔레그램으로 들어온 설정 명령을 먼저 처리한다.
     if not dry_run:
@@ -638,9 +796,10 @@ def cycle(cfg, dry_run):
     # 여기까지 왔으면 조회가 정상이었다는 뜻이다. 직전에 403으로 막혀
     # 있었다면 풀렸다고 알린다. 전송에 성공했을 때만 기록을 지워서,
     # 텔레그램이 잠시 죽어 있었으면 다음 실행에서 다시 시도한다.
-    if blocked_at and not dry_run:
+    if blocked_at and not dry_run and not state.get("blocked"):
         try:
             notifier.send(build_recovered_message(blocked_at))
+            state["blocked_at"] = None
             state["blocked"] = False
             log("  복구 알림 전송 완료")
         except Exception as exc:
@@ -679,7 +838,7 @@ def main():
             cycle(cfg, args.dry_run)
         except chains.BLOCKED_ERRORS as exc:
             log("403 차단: {}".format(exc))
-            if mark_blocked():
+            if mark_blocked(cfg):
                 try:
                     notifier.send(
                         "⚠️ <b>CGV 접근이 403으로 차단됐습니다.</b>\n\n"

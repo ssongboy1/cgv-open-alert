@@ -52,3 +52,6 @@ jobs:
 
           print("\n확인 끝. 사실만 기록하고 실패로 끝내지 않는다.")
           PY
+
+      - name: 감시기 전체를 실제 CGV 로 1회 돌려보기 (알림 전송 없음)
+        run: python watcher.py --dry-run
