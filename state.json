@@ -8,8 +8,8 @@
     "CGV|아이맥스|듄|listing",
     "MB7011|ALL|듄|schedule"
   ],
-  "blocked": true,
-  "blocked_at": "2026-11-05T11:16:45+09:00",
+  "blocked": false,
+  "blocked_at": null,
   "blocked_sites": [
     "0089",
     "0128",
@@ -58,7 +58,11 @@
         "20261121",
         "20261229"
       ],
-      "screens": null
+      "screens": {
+        "4DX": "9",
+        "아이맥스": "1",
+        "아트하우스": "4"
+      }
     },
     "MB7011": {
       "dates": [
@@ -80,9 +84,9 @@
   },
   "initialized": true,
   "last_block_warn": 1793797367.4406192,
-  "last_full_scan": "2026-11-05T15:47:46+09:00",
-  "last_run": "2026-11-05T16:13:34+09:00",
-  "run_no": 70590,
+  "last_full_scan": "2026-11-05T16:17:46+09:00",
+  "last_run": "2026-11-05T16:18:15+09:00",
+  "run_no": 70593,
   "screen_counts": {
     "0345|ALL||screen": "4DX 9편, 아이맥스 1편, 아트하우스 4편"
   },
