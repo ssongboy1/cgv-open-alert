@@ -536,6 +536,9 @@ def test_block_recovery(fake):
         # blocked_at 이다. run_once 가 정상 복귀 시 blocked 를 내리기 때문에
         # (그래야 지점별 403 격리가 성립한다) blocked 로 걸 수 없다.
         notifier.send = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("전송 실패"))
+        # 경고 간격을 풀어 경고가 실제로 나가게 한다. 복구 알림은 경고를
+        # 보냈을 때만 나가므로, 안 풀면 이 시나리오 자체가 성립하지 않는다.
+        st = watcher.load_state(); st["last_block_warn"] = 0; watcher.save_state(st)
         watcher.mark_blocked()
         watcher.cycle(cfg, dry_run=False)
         check("복구 알림 전송이 실패하면 기록을 남긴다",
@@ -550,6 +553,74 @@ def test_block_recovery(fake):
               any("정상으로 돌아왔습니다" in t for t in sent), sent)
         check("다시 보냈으면 그때 기록을 지운다",
               watcher.load_state().get("blocked_at") is None)
+    finally:
+        watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
+
+
+def test_block_flapping(fake):
+    """403 이 깜빡였다 풀리는 것만으로 알림이 나가면 안 된다.
+
+    실제로 겪은 문제다. 경고는 24시간에 한 번으로 막아뒀는데 복구 알림에는
+    제한이 없어서, CGV 가 한 사이클 막혔다 바로 풀릴 때마다 '정상으로
+    돌아왔습니다' 만 반복해서 날아갔다. 사용자는 막혔다는 말은 못 듣고
+    풀렸다는 말만 계속 듣게 된다.
+    """
+    print("")
+    print("[29] 403 깜빡임은 조용해야 한다")
+    fake.reset()
+    import tempfile
+    import pathlib
+    import notifier
+    import telegram_bot
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+
+    cfg = config(target())
+    sent = []
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "state.json"
+    saved = (watcher.STATE_FILE, notifier.send, telegram_bot.handle)
+    watcher.STATE_FILE = tmp
+    notifier.send = lambda text, **kw: sent.append(text)
+    telegram_bot.handle = lambda *a, **kw: (False, None)
+    try:
+        base = dict(fresh_state(), initialized=True,
+                    baselined=[watcher.target_id(cfg["targets"][0])])
+        # 경고를 최근에 이미 보낸 상태 = 24시간 제한에 걸려 있는 상태
+        base["last_block_warn"] = time.time()
+        watcher.save_state(base)
+
+        # 한 사이클 깜빡 막힌다
+        warned = watcher.mark_blocked(cfg)
+        check("경고 간격에 걸려 있으면 경고를 안 보낸다", warned is False, warned)
+        check("그래도 막힌 사실은 기록한다",
+              watcher.load_state().get("blocked") is True)
+
+        # 바로 풀린다
+        sent.clear()
+        watcher.cycle(cfg, dry_run=False)
+        # 감시 대상이 내보내는 정상 알림과 섞이지 않게 복구 알림만 센다.
+        rec = [t for t in sent if "정상으로 돌아왔습니다" in t]
+        check("경고가 안 나갔으면 복구 알림도 안 나간다  <- 이게 스팸의 원인이었다",
+              not rec, rec)
+        check("기록은 조용히 치운다",
+              watcher.load_state().get("blocked_at") is None)
+
+        # 깜빡임을 여러 번 반복해도 조용하다
+        for _ in range(5):
+            watcher.mark_blocked(cfg)
+            watcher.cycle(cfg, dry_run=False)
+        rec = [t for t in sent if "정상으로 돌아왔습니다" in t]
+        check("다섯 번 깜빡여도 복구 알림은 0건", not rec, rec)
+
+        # 반대로, 진짜 경고가 나간 뒤에는 복구를 알린다
+        st = watcher.load_state(); st["last_block_warn"] = 0; watcher.save_state(st)
+        warned = watcher.mark_blocked(cfg)
+        check("간격이 지났으면 경고를 보낸다", warned is True, warned)
+        sent.clear()
+        watcher.cycle(cfg, dry_run=False)
+        check("경고가 나갔으면 복구도 알린다  <- 막혔다고만 하고 끝나면 안 된다",
+              any("정상으로 돌아왔습니다" in t for t in sent), sent)
+        check("복구를 알렸으면 표시를 내린다",
+              not watcher.load_state().get("block_warned"))
     finally:
         watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
 
@@ -1365,6 +1436,7 @@ def main():
         test_required_headers()
         test_bot_security()
         test_block_recovery(fake)
+        test_block_flapping(fake)
         test_megabox(fake)
         test_add_flow()
         test_gate_width(fake)

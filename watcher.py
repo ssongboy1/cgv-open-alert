@@ -123,11 +123,17 @@ def note_blocked(cfg, state):
     경고는 간격을 두고 보내지만 차단 사실은 매번 기록한다. 다음 실행이
     정상으로 돌아오면 이 기록을 보고 복구 알림을 보낸다. 차단 알림만
     오고 끝나면 감시가 아예 멈춘 건지 알 수 없기 때문이다.
+
+    경고를 실제로 내보냈을 때만 block_warned 를 세운다. 복구 알림은 이
+    표시를 보고 나간다. CGV 403 은 한 사이클만 깜빡였다가 바로 풀리는
+    일이 잦은데, 그때마다 복구 알림을 보내면 '막혔다' 는 말은 24시간
+    제한에 걸려 안 가고 '풀렸다' 는 말만 계속 가게 된다.
     """
     now = time.time()
     warn = now - float(state.get("last_block_warn", 0)) >= block_warn_hours(cfg) * 3600
     if warn:
         state["last_block_warn"] = now
+        state["block_warned"] = True
     if not state.get("blocked"):
         state["blocked_at"] = datetime.now(KST).isoformat(timespec="seconds")
     state["blocked"] = True
@@ -996,6 +1002,7 @@ def cycle(cfg, dry_run):
     # 내리므로, 그걸로 걸면 복구 알림 전송이 한 번 실패했을 때 다시 보낼
     # 기회가 사라진다. blocked_at 은 전송에 성공했을 때만 지운다.
     blocked_at = state.get("blocked_at")
+    block_warned = bool(state.get("block_warned"))
 
     # 텔레그램으로 들어온 설정 명령을 먼저 처리한다.
     if not dry_run:
@@ -1014,13 +1021,20 @@ def cycle(cfg, dry_run):
     # 있었다면 풀렸다고 알린다. 전송에 성공했을 때만 기록을 지워서,
     # 텔레그램이 잠시 죽어 있었으면 다음 실행에서 다시 시도한다.
     if blocked_at and not dry_run and not state.get("blocked"):
-        try:
-            notifier.send(build_recovered_message(blocked_at))
+        if not block_warned:
+            # 막혔다고 알린 적이 없으면 풀렸다고 알릴 것도 없다. 사용자
+            # 입장에서는 아무 일도 없었던 것이다. 기록만 조용히 치운다.
             state["blocked_at"] = None
-            state["blocked"] = False
-            log("  복구 알림 전송 완료")
-        except Exception as exc:
-            log("복구 알림 실패(무시): {}".format(exc))
+            log("  잠깐 막혔다 풀림(경고 안 나갔음) — 복구 알림 생략")
+        else:
+            try:
+                notifier.send(build_recovered_message(blocked_at))
+                state["blocked_at"] = None
+                state["block_warned"] = False
+                state["blocked"] = False
+                log("  복구 알림 전송 완료")
+            except Exception as exc:
+                log("복구 알림 실패(무시): {}".format(exc))
 
     if not dry_run:
         save_state(state)
