@@ -9,8 +9,8 @@
     "MB7011|ALL|듄|schedule"
   ],
   "block_warned": false,
-  "blocked": true,
-  "blocked_at": "2026-11-06T20:13:51+09:00",
+  "blocked": false,
+  "blocked_at": null,
   "blocked_sites": [
     "0089",
     "0128",
@@ -60,7 +60,11 @@
         "20261121",
         "20261229"
       ],
-      "screens": null
+      "screens": {
+        "4DX": "8",
+        "아이맥스": "1",
+        "아트하우스": "4"
+      }
     },
     "MB7011": {
       "dates": [
@@ -82,8 +86,8 @@
   "initialized": true,
   "last_block_warn": 1793885442.6245217,
   "last_full_scan": "2026-11-06T20:55:24+09:00",
-  "last_run": "2026-11-06T21:03:55+09:00",
-  "run_no": 70985,
+  "last_run": "2026-11-06T21:19:03+09:00",
+  "run_no": 70989,
   "screen_counts": {
     "0345|ALL||screen": "4DX 8편, 아이맥스 1편, 아트하우스 4편"
   },
