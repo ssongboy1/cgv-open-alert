@@ -12,7 +12,8 @@
   "blocked": true,
   "blocked_at": "2026-11-08T03:21:01+09:00",
   "blocked_sites": [
-    "0128"
+    "0089",
+    "0345"
   ],
   "gates": {
     "0089": {
@@ -78,8 +79,8 @@
   "initialized": true,
   "last_block_warn": 1794058389.5920215,
   "last_full_scan": "2026-11-08T03:20:28+09:00",
-  "last_run": "2026-11-08T03:25:26+09:00",
-  "run_no": 71525,
+  "last_run": "2026-11-08T03:30:38+09:00",
+  "run_no": 71526,
   "screen_counts": {
     "0345|ALL||screen": "4DX 7편, 아이맥스 3편, 아트하우스 4편"
   },
