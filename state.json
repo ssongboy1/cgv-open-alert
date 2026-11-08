@@ -2,9 +2,7 @@
   "baselined": [
     "0089|아이맥스||date|20261216",
     "0128|아이맥스||date|20261216",
-    "0345|ALL||screen",
     "0345|아이맥스||date|20261216",
-    "0345|아이맥스|듄|date|",
     "CGV|아이맥스|듄|listing",
     "MB7011|ALL|듄|schedule"
   ],
@@ -80,9 +78,9 @@
   },
   "initialized": true,
   "last_block_warn": 1794058389.5920215,
-  "last_full_scan": "2026-11-08T17:55:21+09:00",
-  "last_run": "2026-11-08T18:23:49+09:00",
-  "run_no": 71695,
+  "last_full_scan": "2026-11-08T18:25:22+09:00",
+  "last_run": "2026-11-08T18:29:08+09:00",
+  "run_no": 71699,
   "screen_counts": {
     "0345|ALL||screen": "4DX 6편, 아이맥스 3편, 아트하우스 9편"
   },
