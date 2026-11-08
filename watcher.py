@@ -883,7 +883,10 @@ def run_once(cfg, state, dry_run=False):
             log("  차단 경고는 최근에 이미 보냈으므로 생략")
     else:
         state["blocked"] = False
-        state.pop("blocked_sites", None)
+        # 키를 지우지 않고 빈 목록을 넣는다. state 병합은 '우리에게 없는
+        # 키' 를 원격 값으로 남겨두기 때문에, 지우면 막혔던 기록이
+        # 영원히 되살아난다. 빈 값은 제대로 전달된다.
+        state["blocked_sites"] = []
 
     state["seen"] = sorted(prune_seen(seen, alive_movie_keys or None))
     state["gates"] = new_gates

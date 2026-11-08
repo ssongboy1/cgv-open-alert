@@ -14,12 +14,6 @@
       "watch_date": "20261216"
     },
     {
-      "site_no": "0345",
-      "site_nm": "대구",
-      "screen": "ALL",
-      "notify": "screen"
-    },
-    {
       "site_no": "0089",
       "site_nm": "센텀시티",
       "notify": "date",
@@ -32,13 +26,21 @@
       "watch_date": "20261216"
     },
     {
-      "site_no": "0345",
-      "site_nm": "대구",
-      "notify": "date",
+      "notify": "listing",
       "movie_keyword": "듄"
     },
     {
-      "notify": "listing",
+      "site_no": "0089",
+      "site_nm": "센텀시티",
+      "notify": "date",
+      "watch_date": "20261114",
+      "movie_keyword": "듄"
+    },
+    {
+      "site_no": "0089",
+      "site_nm": "센텀시티",
+      "notify": "screen",
+      "screen": "아이맥스",
       "movie_keyword": "듄"
     }
   ],

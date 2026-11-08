@@ -35,6 +35,7 @@ def ymd(offset):
 
 
 D1, D2 = ymd(1), ymd(2)          # 감지 테스트용 '앞으로 열릴' 상영일자
+DFAR, DFAR2 = ymd(40), ymd(45)   # '아직 한참 남은' 날짜 (듄3 같은 것)
 
 
 def check(name, cond, detail=""):
@@ -908,7 +909,7 @@ def test_date_watch(fake):
     print("\n[20] 예매일 감시 (CGV 시간표 403 우회 아님 — 안 쓰는 것)")
     fake.reset()
 
-    def date_target(site="0345", nm="대구", when="20261216"):
+    def date_target(site="0345", nm="대구", when=DFAR):
         t = {"site_no": site, "site_nm": nm, "notify": "date"}
         if when is not None:
             t["watch_date"] = when
@@ -921,12 +922,12 @@ def test_date_watch(fake):
           (watcher.granularity_of(target()) == "schedule"
            and watcher.granularity_of(target(notify="movie")) == "movie"))
     check("watch_date 를 하나만 적어도 목록으로 읽는다",
-          watcher.watch_dates_of(date_target(when="20261216")) == {"20261216"})
+          watcher.watch_dates_of(date_target(when=DFAR)) == {DFAR})
     check("watch_date 를 안 적으면 '날짜 전부'",
           watcher.watch_dates_of(date_target(when=None)) == set())
 
     # --- 노리는 날짜가 아직 안 열렸을 때
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
     cfg = config(date_target())
     state = fresh_state()
     msgs, state = run(cfg, state)
@@ -936,11 +937,11 @@ def test_date_watch(fake):
 
     # --- 그 날짜가 열리는 순간
     before = fake.schedule_calls
-    fake.set("0345", "20261216", [])
+    fake.set("0345", DFAR, [])
     msgs, state = run(cfg, state)
     check("노리는 날짜가 열리면 알린다", len(msgs) == 1, msgs)
     check("알림에 그 날짜가 들어간다",
-          msgs and "12/16" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(DFAR) in msgs[0][0], msgs and msgs[0][0])
     check("예매 버튼이 붙는다", msgs and msgs[0][2], msgs and msgs[0][2])
     check("시간표는 한 번도 조회하지 않는다  <- 403 인 주소다",
           fake.schedule_calls == before, fake.schedule_calls - before)
@@ -954,19 +955,19 @@ def test_date_watch(fake):
     msgs, state2 = run(config(date_target()), state2)
     check("새 대상은 이미 열려 있던 날짜를 알리지 않는다", not msgs, msgs)
     check("대신 기준선으로 저장한다",
-          watcher.date_key("0345", "20261216") in state2["seen"])
+          watcher.date_key("0345", DFAR) in state2["seen"])
 
     # --- 날짜를 안 적으면 새로 열리는 날짜 전부
     cfg_all = config(date_target(when=None))
     state3 = dict(fresh_state(), initialized=True,
                   baselined=[watcher.target_id(cfg_all["targets"][0])],
-                  seen=[watcher.date_key("0345", "20261104"),
-                        watcher.date_key("0345", "20261216")])
-    fake.set("0345", "20261229", [])
+                  seen=[watcher.date_key("0345", D1),
+                        watcher.date_key("0345", DFAR)])
+    fake.set("0345", DFAR2, [])
     msgs, state3 = run(cfg_all, state3)
     check("watch_date 가 없으면 새로 열린 날짜를 알린다", len(msgs) == 1, msgs)
     check("그 알림은 새로 생긴 날짜다",
-          msgs and "12/29" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(DFAR2) in msgs[0][0], msgs and msgs[0][0])
 
     # --- 요청 수: 날짜만 보는 지점은 특별관 현황을 조회하지 않는다
     fake.gate_calls = 0
@@ -1063,8 +1064,15 @@ def test_block_isolation(fake):
     _msgs, state = watcher.run_once(cfg, state, dry_run=True)
     check("정상으로 돌아오면 차단 기록이 내려간다",
           state.get("blocked") is False, state.get("blocked"))
-    check("막힌 목록도 치운다",
-          "blocked_sites" not in state, state.get("blocked_sites"))
+    check("막힌 목록도 치운다  <- 키를 지우면 병합이 옛 값을 되살린다",
+          state.get("blocked_sites") == [], state.get("blocked_sites"))
+
+    # 병합이 '막혔던 기록 지움' 을 제대로 옮기는지 직접 본다
+    merged = merge_state.merge(
+        {"blocked": False, "blocked_sites": [], "seen": []},
+        {"blocked": True, "blocked_sites": ["0345"], "seen": []})
+    check("병합해도 막힌 기록이 되살아나지 않는다",
+          merged.get("blocked_sites") == [], merged.get("blocked_sites"))
 
 
 def test_screen_watch(fake):
@@ -1188,7 +1196,7 @@ def test_two_date_targets(fake):
     fake.reset()
 
     aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
-             "watch_date": "20261216", "movie_keyword": "듄"}
+             "watch_date": DFAR, "movie_keyword": "듄"}
     anyd = {"site_no": "0345", "site_nm": "대구", "notify": "date",
             "movie_keyword": "듄"}
 
@@ -1196,9 +1204,9 @@ def test_two_date_targets(fake):
           watcher.target_id(aimed) != watcher.target_id(anyd),
           (watcher.target_id(aimed), watcher.target_id(anyd)))
     check("노리는 날짜가 id 에 들어간다",
-          "20261216" in watcher.target_id(aimed), watcher.target_id(aimed))
+          DFAR in watcher.target_id(aimed), watcher.target_id(aimed))
 
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
     cfg = config(aimed, anyd)
     state = fresh_state()
     msgs, state = run(cfg, state)
@@ -1207,19 +1215,19 @@ def test_two_date_targets(fake):
           len(state["baselined"]) == 2, state["baselined"])
 
     # 정규 시간표가 풀려 새 날짜가 생긴다 (12/16 은 아직 아님)
-    fake.set("0345", "20261112", [])
+    fake.set("0345", D2, [])
     msgs, state = run(cfg, state)
     check("새 날짜가 열리면 '아무거나' 쪽이 알린다", len(msgs) == 1, msgs)
     check("그 알림은 새로 생긴 날짜다",
-          msgs and "11/12" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(D2) in msgs[0][0], msgs and msgs[0][0])
 
     # 드디어 12/16 이 열린다
-    fake.set("0345", "20261216", [])
+    fake.set("0345", DFAR, [])
     msgs, state = run(cfg, state)
     check("12/16 이 열리면 두 대상이 각각 알린다  <- 노린 쪽과 아무거나 쪽",
           len(msgs) == 2, [m[0][:30] for m in msgs])
     check("둘 다 12/16 을 가리킨다",
-          all("12/16" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+          all(watcher.fmt_date(DFAR) in m[0] for m in msgs), [m[0][:40] for m in msgs])
 
     msgs, state = run(cfg, state)
     check("두 번 알리지 않는다", not msgs, msgs)
@@ -1298,11 +1306,11 @@ def test_screen_failure_spares_dates(fake):
     fake.reset()
 
     aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
-             "watch_date": "20261216"}
+             "watch_date": DFAR}
     alls = {"site_no": "0345", "site_nm": "대구",
             "screen": "ALL", "notify": "screen"}
 
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
 
     saved = cgv_api.get_special_screens
     cgv_api.get_special_screens = lambda site: (_ for _ in ()).throw(
@@ -1320,17 +1328,17 @@ def test_screen_failure_spares_dates(fake):
               watcher.target_id(alls) not in state["baselined"],
               state["baselined"])
         check("날짜는 게이트에 제대로 들어왔다",
-              state["gates"]["0345"]["dates"] == ["20261104"],
+              state["gates"]["0345"]["dates"] == [D1],
               state["gates"]["0345"])
         check("특별관은 '모름'으로 남는다",
               state["gates"]["0345"]["screens"] is None,
               state["gates"]["0345"]["screens"])
 
         # 특별관이 계속 막혀 있어도 12/16 이 열리면 알린다
-        fake.set("0345", "20261216", [])
+        fake.set("0345", DFAR, [])
         msgs, state = run(cfg, state)
         check("특별관이 막힌 채로도 12/16 열리면 알린다  <- 핵심",
-              len(msgs) == 1 and "12/16" in msgs[0][0],
+              len(msgs) == 1 and watcher.fmt_date(DFAR) in msgs[0][0],
               [m[0][:40] for m in msgs])
     finally:
         cgv_api.get_special_screens = saved
