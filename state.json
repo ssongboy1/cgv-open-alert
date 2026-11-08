@@ -10,9 +10,9 @@
   ],
   "block_warned": false,
   "blocked": true,
-  "blocked_at": "2026-11-09T00:13:54+09:00",
+  "blocked_at": "2026-11-09T00:17:41+09:00",
   "blocked_sites": [
-    "0089"
+    "0128"
   ],
   "gates": {
     "0089": {
@@ -25,11 +25,7 @@
         "20261121",
         "20261229"
       ],
-      "screens": {
-        "4DX": "5",
-        "SCREENX": "2",
-        "아이맥스": "3"
-      }
+      "screens": null
     },
     "0128": {
       "dates": [
@@ -75,8 +71,8 @@
   "initialized": true,
   "last_block_warn": 1794144950.1013927,
   "last_full_scan": "2026-11-09T00:06:36+09:00",
-  "last_run": "2026-11-09T00:13:54+09:00",
-  "run_no": 71835,
+  "last_run": "2026-11-09T00:18:49+09:00",
+  "run_no": 71839,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "3"
   },
