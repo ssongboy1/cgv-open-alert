@@ -1426,6 +1426,69 @@ def test_listing_watch(fake):
         cgv_api.get_now_playing = saved
 
 
+def test_block_backoff(fake):
+    """403 을 맞으면 잠시 쉰다. 막힌 문을 5분마다 두드리지 않는다."""
+    print("\n[29] 차단 뒤 백오프")
+    fake.reset()
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+
+    tgt = {"site_no": "0345", "site_nm": "대구", "notify": "date",
+           "watch_date": DFAR}
+    cfg = config(tgt, block_backoff_minutes=15)
+
+    check("기본 백오프는 15분", watcher.block_backoff_minutes({}) == 15)
+    check("설정으로 바꿀 수 있다",
+          watcher.block_backoff_minutes({"block_backoff_minutes": 3}) == 3)
+
+    boom = cgv_api.CloudflareBlocked("403 Forbidden: 테스트")
+    saved = cgv_api.get_open_dates
+    cgv_api.get_open_dates = lambda site: (_ for _ in ()).throw(boom)
+    try:
+        state = dict(fresh_state(), initialized=True)
+        _msgs, state = watcher.run_once(cfg, state, dry_run=True)
+        check("403 이면 차단으로 기록된다", state.get("blocked") is True)
+        check("다시 시도할 시각을 적어둔다",
+              "0345" in (state.get("blocked_until") or {}),
+              state.get("blocked_until"))
+
+        # 대기 중에는 아예 요청하지 않는다
+        before = fake.gate_calls
+        _msgs, state = watcher.run_once(cfg, dict(state), dry_run=True)
+        check("대기 중에는 요청조차 하지 않는다  <- 이게 이 기능의 전부",
+              fake.gate_calls == before, fake.gate_calls - before)
+        check("그래도 차단 상태는 유지된다", state.get("blocked") is True)
+    finally:
+        cgv_api.get_open_dates = saved
+
+    # 대기 시각이 지나면 다시 시도한다 (이번엔 정상)
+    # 날짜 전용 대상은 특별관을 조회하지 않으므로 fake.gate_calls 는 늘지
+    # 않는다. 열린날짜 조회를 직접 센다.
+    state["blocked_until"] = {
+        "0345": (datetime.now(watcher.KST) - timedelta(minutes=1)).isoformat(
+            timespec="seconds")}
+    date_calls = []
+    plain = cgv_api.get_open_dates
+    cgv_api.get_open_dates = lambda site: (date_calls.append(site)
+                                           or plain(site))
+    try:
+        _msgs, state = watcher.run_once(cfg, dict(state), dry_run=True)
+    finally:
+        cgv_api.get_open_dates = plain
+    check("대기가 끝나면 다시 시도한다", date_calls == ["0345"], date_calls)
+    check("성공하면 대기 기록이 지워진다",
+          "0345" not in (state.get("blocked_until") or {}),
+          state.get("blocked_until"))
+    check("성공하면 차단도 풀린다", state.get("blocked") is False)
+
+    # 지난 시각이 적혀 있어도 대기로 치지 않는다
+    past = {"0345": (datetime.now(watcher.KST) - timedelta(hours=1)).isoformat()}
+    check("이미 지난 대기 시각은 무시한다",
+          watcher.waiting_until({"blocked_until": past}) == {},
+          watcher.waiting_until({"blocked_until": past}))
+    check("깨진 값이 있어도 죽지 않는다",
+          watcher.waiting_until({"blocked_until": {"0345": "말도안되는값"}}) == {})
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1457,6 +1520,7 @@ def main():
         test_all_screens_watch(fake)
         test_screen_failure_spares_dates(fake)
         test_listing_watch(fake)
+        test_block_backoff(fake)
     finally:
         fake.restore()
 
