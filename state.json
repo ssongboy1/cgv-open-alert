@@ -9,15 +9,17 @@
     "CGV|아이맥스|듄|listing",
     "MB7011|ALL|듄|schedule"
   ],
-  "block_warned": false,
+  "block_warned": true,
   "blocked": true,
   "blocked_at": "2026-11-11T22:33:15+09:00",
   "blocked_sites": [
     "0089",
+    "0128",
     "예매목록"
   ],
   "blocked_until": {
     "0089": "2026-11-11T22:49:21+09:00",
+    "0128": "2026-11-11T22:52:40+09:00",
     "예매목록": "2026-11-11T22:48:10+09:00"
   },
   "gates": {
@@ -86,10 +88,10 @@
     }
   },
   "initialized": true,
-  "last_block_warn": 1794317917.008873,
+  "last_block_warn": 1794404328.8859634,
   "last_full_scan": "2026-11-11T22:31:40+09:00",
-  "last_run": "2026-11-11T22:34:25+09:00",
-  "run_no": 73037,
+  "last_run": "2026-11-11T22:38:48+09:00",
+  "run_no": 73041,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "3"
   },
