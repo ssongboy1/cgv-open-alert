@@ -11,12 +11,12 @@
   ],
   "block_warned": false,
   "blocked": true,
-  "blocked_at": "2026-11-13T13:38:45+09:00",
+  "blocked_at": "2026-11-13T13:41:51+09:00",
   "blocked_sites": [
     "0345"
   ],
   "blocked_until": {
-    "0345": "2026-11-13T13:53:41+09:00"
+    "0345": "2026-11-13T13:56:48+09:00"
   },
   "gates": {
     "0089": {
@@ -89,7 +89,7 @@
   "initialized": true,
   "last_block_warn": 1794490834.8032854,
   "last_full_scan": "2026-11-13T13:31:39+09:00",
-  "last_run": "2026-11-13T13:38:45+09:00",
+  "last_run": "2026-11-13T13:42:54+09:00",
   "run_no": 74048,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "3"
