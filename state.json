@@ -35,7 +35,7 @@
       ],
       "screens": {
         "4DX": "1",
-        "SCREENX": "2",
+        "SCREENX": "1",
         "아이맥스": "2"
       }
     },
@@ -86,8 +86,8 @@
   "initialized": true,
   "last_block_warn": 1794836606.7305164,
   "last_full_scan": "2026-11-17T21:52:44+09:00",
-  "last_run": "2026-11-17T21:58:53+09:00",
-  "run_no": 76593,
+  "last_run": "2026-11-17T22:04:02+09:00",
+  "run_no": 76597,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "2"
   },
