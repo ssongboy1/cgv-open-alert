@@ -10,14 +10,10 @@
     "MB7011|ALL|듄|schedule"
   ],
   "block_warned": false,
-  "blocked": true,
-  "blocked_at": "2026-11-18T18:21:44+09:00",
-  "blocked_sites": [
-    "0128"
-  ],
-  "blocked_until": {
-    "0128": "2026-11-18T18:36:38+09:00"
-  },
+  "blocked": false,
+  "blocked_at": null,
+  "blocked_sites": [],
+  "blocked_until": {},
   "gates": {
     "0089": {
       "dates": [
@@ -83,9 +79,9 @@
   },
   "initialized": true,
   "last_block_warn": 1794923018.214675,
-  "last_full_scan": "2026-11-18T18:08:37+09:00",
-  "last_run": "2026-11-18T18:24:04+09:00",
-  "run_no": 76969,
+  "last_full_scan": "2026-11-18T18:38:58+09:00",
+  "last_run": "2026-11-18T18:39:20+09:00",
+  "run_no": 76973,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "1"
   },
