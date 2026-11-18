@@ -88,9 +88,9 @@
   },
   "initialized": true,
   "last_block_warn": 1794923018.214675,
-  "last_full_scan": "2026-11-18T08:57:30+09:00",
-  "last_run": "2026-11-18T09:23:39+09:00",
-  "run_no": 76785,
+  "last_full_scan": "2026-11-18T09:27:35+09:00",
+  "last_run": "2026-11-18T09:29:00+09:00",
+  "run_no": 76789,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "1"
   },
