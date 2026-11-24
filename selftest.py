@@ -35,6 +35,7 @@ def ymd(offset):
 
 
 D1, D2 = ymd(1), ymd(2)          # 감지 테스트용 '앞으로 열릴' 상영일자
+DFAR, DFAR2 = ymd(40), ymd(45)   # '아직 한참 남은' 날짜 (듄3 같은 것)
 
 
 def check(name, cond, detail=""):
@@ -536,6 +537,9 @@ def test_block_recovery(fake):
         # blocked_at 이다. run_once 가 정상 복귀 시 blocked 를 내리기 때문에
         # (그래야 지점별 403 격리가 성립한다) blocked 로 걸 수 없다.
         notifier.send = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("전송 실패"))
+        # 경고 간격을 풀어 경고가 실제로 나가게 한다. 복구 알림은 경고를
+        # 보냈을 때만 나가므로, 안 풀면 이 시나리오 자체가 성립하지 않는다.
+        st = watcher.load_state(); st["last_block_warn"] = 0; watcher.save_state(st)
         watcher.mark_blocked()
         watcher.cycle(cfg, dry_run=False)
         check("복구 알림 전송이 실패하면 기록을 남긴다",
@@ -550,6 +554,74 @@ def test_block_recovery(fake):
               any("정상으로 돌아왔습니다" in t for t in sent), sent)
         check("다시 보냈으면 그때 기록을 지운다",
               watcher.load_state().get("blocked_at") is None)
+    finally:
+        watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
+
+
+def test_block_flapping(fake):
+    """403 이 깜빡였다 풀리는 것만으로 알림이 나가면 안 된다.
+
+    실제로 겪은 문제다. 경고는 24시간에 한 번으로 막아뒀는데 복구 알림에는
+    제한이 없어서, CGV 가 한 사이클 막혔다 바로 풀릴 때마다 '정상으로
+    돌아왔습니다' 만 반복해서 날아갔다. 사용자는 막혔다는 말은 못 듣고
+    풀렸다는 말만 계속 듣게 된다.
+    """
+    print("")
+    print("[29] 403 깜빡임은 조용해야 한다")
+    fake.reset()
+    import tempfile
+    import pathlib
+    import notifier
+    import telegram_bot
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+
+    cfg = config(target())
+    sent = []
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "state.json"
+    saved = (watcher.STATE_FILE, notifier.send, telegram_bot.handle)
+    watcher.STATE_FILE = tmp
+    notifier.send = lambda text, **kw: sent.append(text)
+    telegram_bot.handle = lambda *a, **kw: (False, None)
+    try:
+        base = dict(fresh_state(), initialized=True,
+                    baselined=[watcher.target_id(cfg["targets"][0])])
+        # 경고를 최근에 이미 보낸 상태 = 24시간 제한에 걸려 있는 상태
+        base["last_block_warn"] = time.time()
+        watcher.save_state(base)
+
+        # 한 사이클 깜빡 막힌다
+        warned = watcher.mark_blocked(cfg)
+        check("경고 간격에 걸려 있으면 경고를 안 보낸다", warned is False, warned)
+        check("그래도 막힌 사실은 기록한다",
+              watcher.load_state().get("blocked") is True)
+
+        # 바로 풀린다
+        sent.clear()
+        watcher.cycle(cfg, dry_run=False)
+        # 감시 대상이 내보내는 정상 알림과 섞이지 않게 복구 알림만 센다.
+        rec = [t for t in sent if "정상으로 돌아왔습니다" in t]
+        check("경고가 안 나갔으면 복구 알림도 안 나간다  <- 이게 스팸의 원인이었다",
+              not rec, rec)
+        check("기록은 조용히 치운다",
+              watcher.load_state().get("blocked_at") is None)
+
+        # 깜빡임을 여러 번 반복해도 조용하다
+        for _ in range(5):
+            watcher.mark_blocked(cfg)
+            watcher.cycle(cfg, dry_run=False)
+        rec = [t for t in sent if "정상으로 돌아왔습니다" in t]
+        check("다섯 번 깜빡여도 복구 알림은 0건", not rec, rec)
+
+        # 반대로, 진짜 경고가 나간 뒤에는 복구를 알린다
+        st = watcher.load_state(); st["last_block_warn"] = 0; watcher.save_state(st)
+        warned = watcher.mark_blocked(cfg)
+        check("간격이 지났으면 경고를 보낸다", warned is True, warned)
+        sent.clear()
+        watcher.cycle(cfg, dry_run=False)
+        check("경고가 나갔으면 복구도 알린다  <- 막혔다고만 하고 끝나면 안 된다",
+              any("정상으로 돌아왔습니다" in t for t in sent), sent)
+        check("복구를 알렸으면 표시를 내린다",
+              not watcher.load_state().get("block_warned"))
     finally:
         watcher.STATE_FILE, notifier.send, telegram_bot.handle = saved
 
@@ -837,7 +909,7 @@ def test_date_watch(fake):
     print("\n[20] 예매일 감시 (CGV 시간표 403 우회 아님 — 안 쓰는 것)")
     fake.reset()
 
-    def date_target(site="0345", nm="대구", when="20261216"):
+    def date_target(site="0345", nm="대구", when=DFAR):
         t = {"site_no": site, "site_nm": nm, "notify": "date"}
         if when is not None:
             t["watch_date"] = when
@@ -850,12 +922,12 @@ def test_date_watch(fake):
           (watcher.granularity_of(target()) == "schedule"
            and watcher.granularity_of(target(notify="movie")) == "movie"))
     check("watch_date 를 하나만 적어도 목록으로 읽는다",
-          watcher.watch_dates_of(date_target(when="20261216")) == {"20261216"})
+          watcher.watch_dates_of(date_target(when=DFAR)) == {DFAR})
     check("watch_date 를 안 적으면 '날짜 전부'",
           watcher.watch_dates_of(date_target(when=None)) == set())
 
     # --- 노리는 날짜가 아직 안 열렸을 때
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
     cfg = config(date_target())
     state = fresh_state()
     msgs, state = run(cfg, state)
@@ -865,11 +937,11 @@ def test_date_watch(fake):
 
     # --- 그 날짜가 열리는 순간
     before = fake.schedule_calls
-    fake.set("0345", "20261216", [])
+    fake.set("0345", DFAR, [])
     msgs, state = run(cfg, state)
     check("노리는 날짜가 열리면 알린다", len(msgs) == 1, msgs)
     check("알림에 그 날짜가 들어간다",
-          msgs and "12/16" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(DFAR) in msgs[0][0], msgs and msgs[0][0])
     check("예매 버튼이 붙는다", msgs and msgs[0][2], msgs and msgs[0][2])
     check("시간표는 한 번도 조회하지 않는다  <- 403 인 주소다",
           fake.schedule_calls == before, fake.schedule_calls - before)
@@ -883,19 +955,19 @@ def test_date_watch(fake):
     msgs, state2 = run(config(date_target()), state2)
     check("새 대상은 이미 열려 있던 날짜를 알리지 않는다", not msgs, msgs)
     check("대신 기준선으로 저장한다",
-          watcher.date_key("0345", "20261216") in state2["seen"])
+          watcher.date_key("0345", DFAR) in state2["seen"])
 
     # --- 날짜를 안 적으면 새로 열리는 날짜 전부
     cfg_all = config(date_target(when=None))
     state3 = dict(fresh_state(), initialized=True,
                   baselined=[watcher.target_id(cfg_all["targets"][0])],
-                  seen=[watcher.date_key("0345", "20261104"),
-                        watcher.date_key("0345", "20261216")])
-    fake.set("0345", "20261229", [])
+                  seen=[watcher.date_key("0345", D1),
+                        watcher.date_key("0345", DFAR)])
+    fake.set("0345", DFAR2, [])
     msgs, state3 = run(cfg_all, state3)
     check("watch_date 가 없으면 새로 열린 날짜를 알린다", len(msgs) == 1, msgs)
     check("그 알림은 새로 생긴 날짜다",
-          msgs and "12/29" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(DFAR2) in msgs[0][0], msgs and msgs[0][0])
 
     # --- 요청 수: 날짜만 보는 지점은 특별관 현황을 조회하지 않는다
     fake.gate_calls = 0
@@ -992,8 +1064,15 @@ def test_block_isolation(fake):
     _msgs, state = watcher.run_once(cfg, state, dry_run=True)
     check("정상으로 돌아오면 차단 기록이 내려간다",
           state.get("blocked") is False, state.get("blocked"))
-    check("막힌 목록도 치운다",
-          "blocked_sites" not in state, state.get("blocked_sites"))
+    check("막힌 목록도 치운다  <- 키를 지우면 병합이 옛 값을 되살린다",
+          state.get("blocked_sites") == [], state.get("blocked_sites"))
+
+    # 병합이 '막혔던 기록 지움' 을 제대로 옮기는지 직접 본다
+    merged = merge_state.merge(
+        {"blocked": False, "blocked_sites": [], "seen": []},
+        {"blocked": True, "blocked_sites": ["0345"], "seen": []})
+    check("병합해도 막힌 기록이 되살아나지 않는다",
+          merged.get("blocked_sites") == [], merged.get("blocked_sites"))
 
 
 def test_screen_watch(fake):
@@ -1117,7 +1196,7 @@ def test_two_date_targets(fake):
     fake.reset()
 
     aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
-             "watch_date": "20261216", "movie_keyword": "듄"}
+             "watch_date": DFAR, "movie_keyword": "듄"}
     anyd = {"site_no": "0345", "site_nm": "대구", "notify": "date",
             "movie_keyword": "듄"}
 
@@ -1125,9 +1204,9 @@ def test_two_date_targets(fake):
           watcher.target_id(aimed) != watcher.target_id(anyd),
           (watcher.target_id(aimed), watcher.target_id(anyd)))
     check("노리는 날짜가 id 에 들어간다",
-          "20261216" in watcher.target_id(aimed), watcher.target_id(aimed))
+          DFAR in watcher.target_id(aimed), watcher.target_id(aimed))
 
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
     cfg = config(aimed, anyd)
     state = fresh_state()
     msgs, state = run(cfg, state)
@@ -1136,19 +1215,19 @@ def test_two_date_targets(fake):
           len(state["baselined"]) == 2, state["baselined"])
 
     # 정규 시간표가 풀려 새 날짜가 생긴다 (12/16 은 아직 아님)
-    fake.set("0345", "20261112", [])
+    fake.set("0345", D2, [])
     msgs, state = run(cfg, state)
     check("새 날짜가 열리면 '아무거나' 쪽이 알린다", len(msgs) == 1, msgs)
     check("그 알림은 새로 생긴 날짜다",
-          msgs and "11/12" in msgs[0][0], msgs and msgs[0][0])
+          msgs and watcher.fmt_date(D2) in msgs[0][0], msgs and msgs[0][0])
 
     # 드디어 12/16 이 열린다
-    fake.set("0345", "20261216", [])
+    fake.set("0345", DFAR, [])
     msgs, state = run(cfg, state)
     check("12/16 이 열리면 두 대상이 각각 알린다  <- 노린 쪽과 아무거나 쪽",
           len(msgs) == 2, [m[0][:30] for m in msgs])
     check("둘 다 12/16 을 가리킨다",
-          all("12/16" in m[0] for m in msgs), [m[0][:40] for m in msgs])
+          all(watcher.fmt_date(DFAR) in m[0] for m in msgs), [m[0][:40] for m in msgs])
 
     msgs, state = run(cfg, state)
     check("두 번 알리지 않는다", not msgs, msgs)
@@ -1227,11 +1306,11 @@ def test_screen_failure_spares_dates(fake):
     fake.reset()
 
     aimed = {"site_no": "0345", "site_nm": "대구", "notify": "date",
-             "watch_date": "20261216"}
+             "watch_date": DFAR}
     alls = {"site_no": "0345", "site_nm": "대구",
             "screen": "ALL", "notify": "screen"}
 
-    fake.set("0345", "20261104", [row("0345", "M1", "타짜", "20261104", "2120")])
+    fake.set("0345", D1, [row("0345", "M1", "타짜", D1, "2120")])
 
     saved = cgv_api.get_special_screens
     cgv_api.get_special_screens = lambda site: (_ for _ in ()).throw(
@@ -1249,17 +1328,17 @@ def test_screen_failure_spares_dates(fake):
               watcher.target_id(alls) not in state["baselined"],
               state["baselined"])
         check("날짜는 게이트에 제대로 들어왔다",
-              state["gates"]["0345"]["dates"] == ["20261104"],
+              state["gates"]["0345"]["dates"] == [D1],
               state["gates"]["0345"])
         check("특별관은 '모름'으로 남는다",
               state["gates"]["0345"]["screens"] is None,
               state["gates"]["0345"]["screens"])
 
         # 특별관이 계속 막혀 있어도 12/16 이 열리면 알린다
-        fake.set("0345", "20261216", [])
+        fake.set("0345", DFAR, [])
         msgs, state = run(cfg, state)
         check("특별관이 막힌 채로도 12/16 열리면 알린다  <- 핵심",
-              len(msgs) == 1 and "12/16" in msgs[0][0],
+              len(msgs) == 1 and watcher.fmt_date(DFAR) in msgs[0][0],
               [m[0][:40] for m in msgs])
     finally:
         cgv_api.get_special_screens = saved
@@ -1347,6 +1426,69 @@ def test_listing_watch(fake):
         cgv_api.get_now_playing = saved
 
 
+def test_block_backoff(fake):
+    """403 을 맞으면 잠시 쉰다. 막힌 문을 5분마다 두드리지 않는다."""
+    print("\n[29] 차단 뒤 백오프")
+    fake.reset()
+    fake.set("0345", D1, [row("0345", "M1", "오디세이", D1, "0800")])
+
+    tgt = {"site_no": "0345", "site_nm": "대구", "notify": "date",
+           "watch_date": DFAR}
+    cfg = config(tgt, block_backoff_minutes=15)
+
+    check("기본 백오프는 15분", watcher.block_backoff_minutes({}) == 15)
+    check("설정으로 바꿀 수 있다",
+          watcher.block_backoff_minutes({"block_backoff_minutes": 3}) == 3)
+
+    boom = cgv_api.CloudflareBlocked("403 Forbidden: 테스트")
+    saved = cgv_api.get_open_dates
+    cgv_api.get_open_dates = lambda site: (_ for _ in ()).throw(boom)
+    try:
+        state = dict(fresh_state(), initialized=True)
+        _msgs, state = watcher.run_once(cfg, state, dry_run=True)
+        check("403 이면 차단으로 기록된다", state.get("blocked") is True)
+        check("다시 시도할 시각을 적어둔다",
+              "0345" in (state.get("blocked_until") or {}),
+              state.get("blocked_until"))
+
+        # 대기 중에는 아예 요청하지 않는다
+        before = fake.gate_calls
+        _msgs, state = watcher.run_once(cfg, dict(state), dry_run=True)
+        check("대기 중에는 요청조차 하지 않는다  <- 이게 이 기능의 전부",
+              fake.gate_calls == before, fake.gate_calls - before)
+        check("그래도 차단 상태는 유지된다", state.get("blocked") is True)
+    finally:
+        cgv_api.get_open_dates = saved
+
+    # 대기 시각이 지나면 다시 시도한다 (이번엔 정상)
+    # 날짜 전용 대상은 특별관을 조회하지 않으므로 fake.gate_calls 는 늘지
+    # 않는다. 열린날짜 조회를 직접 센다.
+    state["blocked_until"] = {
+        "0345": (datetime.now(watcher.KST) - timedelta(minutes=1)).isoformat(
+            timespec="seconds")}
+    date_calls = []
+    plain = cgv_api.get_open_dates
+    cgv_api.get_open_dates = lambda site: (date_calls.append(site)
+                                           or plain(site))
+    try:
+        _msgs, state = watcher.run_once(cfg, dict(state), dry_run=True)
+    finally:
+        cgv_api.get_open_dates = plain
+    check("대기가 끝나면 다시 시도한다", date_calls == ["0345"], date_calls)
+    check("성공하면 대기 기록이 지워진다",
+          "0345" not in (state.get("blocked_until") or {}),
+          state.get("blocked_until"))
+    check("성공하면 차단도 풀린다", state.get("blocked") is False)
+
+    # 지난 시각이 적혀 있어도 대기로 치지 않는다
+    past = {"0345": (datetime.now(watcher.KST) - timedelta(hours=1)).isoformat()}
+    check("이미 지난 대기 시각은 무시한다",
+          watcher.waiting_until({"blocked_until": past}) == {},
+          watcher.waiting_until({"blocked_until": past}))
+    check("깨진 값이 있어도 죽지 않는다",
+          watcher.waiting_until({"blocked_until": {"0345": "말도안되는값"}}) == {})
+
+
 def main():
     fake = FakeCgv().install()
     try:
@@ -1365,6 +1507,7 @@ def main():
         test_required_headers()
         test_bot_security()
         test_block_recovery(fake)
+        test_block_flapping(fake)
         test_megabox(fake)
         test_add_flow()
         test_gate_width(fake)
@@ -1377,6 +1520,7 @@ def main():
         test_all_screens_watch(fake)
         test_screen_failure_spares_dates(fake)
         test_listing_watch(fake)
+        test_block_backoff(fake)
     finally:
         fake.restore()
 

@@ -55,3 +55,40 @@ jobs:
 
       - name: 감시기 전체를 실제 CGV 로 1회 돌려보기 (알림 전송 없음)
         run: python watcher.py --dry-run
+
+      - name: 어벤져스·듄3 현황 확인 (1회용)
+        run: |
+          python - <<'PY'
+          import cgv_api
+
+          WANT = ("어벤져스", "둠스데이", "듄", "아바타")
+          try:
+              playing = cgv_api.get_now_playing()
+          except Exception as e:
+              print("예매 목록 실패:", type(e).__name__, str(e)[:120])
+              playing = []
+
+          print("예매 목록 {}편".format(len(playing)))
+          print("상위 10편:")
+          for m in playing[:10]:
+              print("   {:<36} 예매율 {}".format(
+                  str(m.get("movNm"))[:36], m.get("atktRate")))
+          print()
+          print("찾는 영화:")
+          for w in WANT:
+              hit = [(m.get("movNo"), m.get("movNm"), m.get("atktRate"))
+                     for m in playing if w in str(m.get("movNm"))]
+              print("   {:8} -> {}".format(w, hit or "목록에 없음"))
+
+          print()
+          print("지점별 특별관 편수")
+          for site, nm in (("0089", "센텀시티"), ("0128", "울산삼산"),
+                           ("0345", "대구"), ("0013", "용산아이파크몰")):
+              try:
+                  rows = cgv_api.get_special_screens(site)
+                  got = {r.get("comCdvalNm"): r.get("schdCnt") for r in rows}
+                  print("   {:4} {:<14} {}".format(site, nm, got or "(없음)"))
+              except Exception as e:
+                  print("   {:4} {:<14} 실패 {}".format(site, nm, type(e).__name__))
+              cgv_api._jitter()
+          PY
