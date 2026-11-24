@@ -62,10 +62,23 @@ jobs:
           import cgv_api
 
           WANT = ("어벤져스", "둠스데이", "듄", "아바타")
-          try:
-              playing = cgv_api.get_now_playing()
-          except Exception as e:
-              print("예매 목록 실패:", type(e).__name__, str(e)[:120])
+          # 이 주소는 간헐적으로 403 이 난다. 한 번 실패한 것을 '목록에
+          # 없다' 로 읽으면 정반대 결론이 나오므로 몇 번 더 시도한다.
+          import time
+          playing = None
+          for attempt in (1, 2, 3):
+              try:
+                  playing = cgv_api.get_now_playing()
+                  print("예매 목록 조회 성공 (시도 {})".format(attempt))
+                  break
+              except Exception as e:
+                  print("시도 {} 실패: {} {}".format(
+                      attempt, type(e).__name__, str(e)[:80]))
+                  time.sleep(8)
+          if playing is None:
+              print()
+              print("!!! 예매 목록을 못 읽었다. 아래 '목록에 없음' 은 ")
+              print("!!! 영화가 없다는 뜻이 아니라 확인 못 했다는 뜻이다.")
               playing = []
 
           print("예매 목록 {}편".format(len(playing)))
