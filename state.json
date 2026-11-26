@@ -10,16 +10,10 @@
     "MB7011|돌비시네마|어벤져스|schedule"
   ],
   "block_warned": false,
-  "blocked": true,
-  "blocked_at": "2026-11-26T08:53:05+09:00",
-  "blocked_sites": [
-    "0089",
-    "예매목록"
-  ],
-  "blocked_until": {
-    "0089": "2026-11-26T09:12:38+09:00",
-    "예매목록": "2026-11-26T09:12:38+09:00"
-  },
+  "blocked": false,
+  "blocked_at": null,
+  "blocked_sites": [],
+  "blocked_until": {},
   "gates": {
     "0089": {
       "dates": [
@@ -81,11 +75,7 @@
         "20261220",
         "20261229"
       ],
-      "screens": {
-        "4DX": "4",
-        "아이맥스": "2",
-        "아트하우스": "9"
-      }
+      "screens": null
     },
     "MB7011": {
       "dates": [
@@ -107,8 +97,8 @@
   "initialized": true,
   "last_block_warn": 1795615874.3713005,
   "last_full_scan": "2026-11-26T09:07:34+09:00",
-  "last_run": "2026-11-26T09:09:03+09:00",
-  "run_no": 81583,
+  "last_run": "2026-11-26T09:13:48+09:00",
+  "run_no": 81587,
   "screen_counts": {
     "0089|아이맥스|듄|screen": "2",
     "0345|아이맥스|듄|screen": "2"
