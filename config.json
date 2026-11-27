@@ -3,34 +3,6 @@
     {
       "site_no": "MB7011",
       "site_nm": "대구신세계(동대구)",
-      "screen": "ALL",
-      "movie_keyword": "듄",
-      "notify": "schedule"
-    },
-    {
-      "notify": "listing",
-      "movie_keyword": "듄"
-    },
-    {
-      "site_no": "0089",
-      "site_nm": "센텀시티",
-      "notify": "screen",
-      "screen": "아이맥스",
-      "movie_keyword": "듄"
-    },
-    {
-      "site_no": "0089",
-      "site_nm": "센텀시티",
-      "notify": "date",
-      "watch_date": [
-        "20261202",
-        "20261205"
-      ],
-      "movie_keyword": "듄"
-    },
-    {
-      "site_no": "MB7011",
-      "site_nm": "대구신세계(동대구)",
       "screen": "돌비시네마",
       "movie_keyword": "어벤져스",
       "notify": "schedule"
@@ -40,21 +12,11 @@
       "movie_keyword": "어벤져스"
     },
     {
-      "site_no": "0345",
-      "site_nm": "대구",
-      "notify": "date",
-      "watch_date": [
-        "20261202",
-        "20261205"
-      ],
-      "movie_keyword": "듄"
-    },
-    {
-      "site_no": "0345",
-      "site_nm": "대구",
-      "notify": "screen",
-      "screen": "아이맥스",
-      "movie_keyword": "듄"
+      "site_no": "MB7011",
+      "site_nm": "대구신세계(동대구)",
+      "screen": "ALL",
+      "movie_keyword": "어벤져스",
+      "notify": "schedule"
     }
   ],
   "notify_on_first_run": false,
