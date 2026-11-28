@@ -104,9 +104,9 @@
   },
   "initialized": true,
   "last_block_warn": 1795792953.552348,
-  "last_full_scan": "2026-11-28T11:47:31+09:00",
-  "last_run": "2026-11-28T12:08:36+09:00",
-  "run_no": 82404,
+  "last_full_scan": "2026-11-28T12:17:37+09:00",
+  "last_run": "2026-11-28T12:19:06+09:00",
+  "run_no": 82408,
   "screen_counts": {},
   "seen": [
     "D|0089|20261202",
